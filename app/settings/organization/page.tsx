@@ -1,16 +1,15 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
-import { useTaskStore } from "@/lib/store";
-import { useTranslation } from "@/lib/i18n";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
   DialogContent,
@@ -36,861 +35,754 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Separator } from "@/components/ui/separator";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Switch } from "@/components/ui/switch";
 import {
   ArrowLeft,
   Plus,
   Pencil,
   Trash2,
   Building2,
-  Users,
-  UserPlus,
-  UserMinus,
-  Briefcase,
+  Clock,
+  CheckCircle2,
+  Star,
 } from "lucide-react";
-import type { Position, User } from "@/lib/types";
+import { positionsApi, type Position } from "@/lib/api/positions";
+import { workSchedulesApi, type WorkSchedule } from "@/lib/api/work-schedules";
+import { ApiError } from "@/lib/api/client";
 
-const levelLabels: Record<number, { en: string; th: string }> = {
-  1: { en: "Executive", th: "ผู้บริหารสูงสุด" },
-  2: { en: "C-Level", th: "ผู้บริหารระดับสูง" },
-  3: { en: "VP/Director", th: "รองประธาน/ผู้อำนวยการ" },
-  4: { en: "Manager", th: "ผู้จัดการ" },
-  5: { en: "Senior Staff", th: "พนักงานอาวุโส" },
-  6: { en: "Staff", th: "พนักงาน" },
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+const levelLabels: Record<number, string> = {
+  1: "Executive",
+  2: "C-Level",
+  3: "VP/Director",
+  4: "Manager",
+  5: "Senior Staff",
+  6: "Staff",
 };
 
-const levelColors: Record<number, string> = {
-  1: "#ef4444",
-  2: "#f97316",
-  3: "#8b5cf6",
-  4: "#10b981",
-  5: "#3b82f6",
-  6: "#6b7280",
-};
-
-const defaultColors = [
+const colorOptions = [
   "#ef4444", "#f97316", "#f59e0b", "#84cc16", "#22c55e",
-  "#10b981", "#14b8a6", "#06b6d4", "#0ea5e9", "#3b82f6",
-  "#6366f1", "#8b5cf6", "#a855f7", "#d946ef", "#ec4899",
+  "#10b981", "#14b8a6", "#06b6d4", "#3b82f6", "#6366f1",
+  "#8b5cf6", "#a855f7", "#ec4899", "#6b7280",
 ];
 
-// Tree Node Component for recursive rendering
-interface TreeNodeProps {
-  position: Position;
-  level: number;
-  expandedNodes: Set<string>;
-  toggleExpand: (id: string) => void;
-  getChildPositions: (parentId: string) => Position[];
-  getUsersForPosition: (positionId: string) => User[];
-  levelColors: Record<number, string>;
-  language: string;
-  onEdit: (position: Position) => void;
-  onDelete: (position: Position) => void;
-  onAssign: (position: Position) => void;
-}
+const dayNames = ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"];
 
-function TreeNode({
-  position,
-  level,
-  expandedNodes,
-  toggleExpand,
-  getChildPositions,
-  getUsersForPosition,
-  levelColors,
-  language,
-  onEdit,
-  onDelete,
-  onAssign,
-}: TreeNodeProps) {
-  const children = getChildPositions(position.id);
-  const hasChildren = children.length > 0;
-  const isExpanded = expandedNodes.has(position.id);
-  const positionUsers = getUsersForPosition(position.id);
+// ── Main Component ─────────────────────────────────────────────────────────────
+
+export default function OrganizationPage() {
+  // ── Positions State ──────────────────────────────────────────────────────────
+  const [positions, setPositions] = useState<Position[]>([]);
+  const [posLoading, setPosLoading] = useState(true);
+  const [showPosDialog, setShowPosDialog] = useState(false);
+  const [editingPos, setEditingPos] = useState<Position | null>(null);
+  const [deletingPosId, setDeletingPosId] = useState<string | null>(null);
+
+  // Position form
+  const [posName, setPosName] = useState("");
+  const [posDept, setPosDept] = useState("");
+  const [posLevel, setPosLevel] = useState(6);
+  const [posJobLevelCode, setPosJobLevelCode] = useState("");
+  const [posColor, setPosColor] = useState("#3b82f6");
+  const [posParentId, setPosParentId] = useState<string>("none");
+
+  // ── Work Schedules State ─────────────────────────────────────────────────────
+  const [schedules, setSchedules] = useState<WorkSchedule[]>([]);
+  const [wsLoading, setWsLoading] = useState(true);
+  const [showWsDialog, setShowWsDialog] = useState(false);
+  const [editingWs, setEditingWs] = useState<WorkSchedule | null>(null);
+  const [deletingWsId, setDeletingWsId] = useState<string | null>(null);
+
+  // Work Schedule form
+  const [wsName, setWsName] = useState("");
+  const [wsDaysPerWeek, setWsDaysPerWeek] = useState(5);
+  const [wsHoursPerDay, setWsHoursPerDay] = useState(8);
+  const [wsStartTime, setWsStartTime] = useState("09:00");
+  const [wsEndTime, setWsEndTime] = useState("18:00");
+  const [wsWorkDays, setWsWorkDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [wsIsDefault, setWsIsDefault] = useState(false);
+
+  // ── Load data ────────────────────────────────────────────────────────────────
+
+  const loadPositions = async () => {
+    try {
+      setPosLoading(true);
+      const data = await positionsApi.list();
+      setPositions(data);
+    } catch (err) {
+      console.error(err);
+      toast.error("ไม่สามารถโหลดข้อมูลตำแหน่งได้");
+    } finally {
+      setPosLoading(false);
+    }
+  };
+
+  const loadSchedules = async () => {
+    try {
+      setWsLoading(true);
+      const data = await workSchedulesApi.list();
+      setSchedules(data);
+    } catch (err) {
+      console.error(err);
+      toast.error("ไม่สามารถโหลดข้อมูลตารางเวลาได้");
+    } finally {
+      setWsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadPositions();
+    loadSchedules();
+  }, []);
+
+  // ── Positions CRUD ───────────────────────────────────────────────────────────
+
+  const resetPosForm = () => {
+    setPosName("");
+    setPosDept("");
+    setPosLevel(6);
+    setPosJobLevelCode("");
+    setPosColor("#3b82f6");
+    setPosParentId("none");
+    setEditingPos(null);
+  };
+
+  const openCreatePos = () => {
+    resetPosForm();
+    setShowPosDialog(true);
+  };
+
+  const openEditPos = (pos: Position) => {
+    setEditingPos(pos);
+    setPosName(pos.name);
+    setPosDept(pos.department ?? "");
+    setPosLevel(pos.level);
+    setPosJobLevelCode(pos.jobLevelCode ?? "");
+    setPosColor(pos.color);
+    setPosParentId(pos.parentPositionId ?? "none");
+    setShowPosDialog(true);
+  };
+
+  const handleSavePos = async () => {
+    if (!posName.trim()) return;
+    const payload = {
+      name: posName.trim(),
+      department: posDept.trim() || undefined,
+      level: posLevel,
+      jobLevelCode: posJobLevelCode.trim() || undefined,
+      color: posColor,
+      parentPositionId: posParentId !== "none" ? posParentId : undefined,
+    };
+    try {
+      if (editingPos) {
+        await positionsApi.update(editingPos.id, payload);
+        toast.success("แก้ไขตำแหน่งสำเร็จ");
+      } else {
+        await positionsApi.create(payload);
+        toast.success("สร้างตำแหน่งสำเร็จ");
+      }
+      setShowPosDialog(false);
+      resetPosForm();
+      await loadPositions();
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : "เกิดข้อผิดพลาด";
+      toast.error(msg);
+    }
+  };
+
+  const handleDeletePos = async () => {
+    if (!deletingPosId) return;
+    try {
+      await positionsApi.delete(deletingPosId);
+      toast.success("ลบตำแหน่งสำเร็จ");
+      setDeletingPosId(null);
+      await loadPositions();
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : "เกิดข้อผิดพลาด";
+      toast.error(msg);
+      setDeletingPosId(null);
+    }
+  };
+
+  // ── Work Schedules CRUD ──────────────────────────────────────────────────────
+
+  const resetWsForm = () => {
+    setWsName("");
+    setWsDaysPerWeek(5);
+    setWsHoursPerDay(8);
+    setWsStartTime("09:00");
+    setWsEndTime("18:00");
+    setWsWorkDays([1, 2, 3, 4, 5]);
+    setWsIsDefault(false);
+    setEditingWs(null);
+  };
+
+  const openCreateWs = () => {
+    resetWsForm();
+    setShowWsDialog(true);
+  };
+
+  const openEditWs = (ws: WorkSchedule) => {
+    setEditingWs(ws);
+    setWsName(ws.name);
+    setWsDaysPerWeek(Number(ws.daysPerWeek));
+    setWsHoursPerDay(Number(ws.hoursPerDay));
+    setWsStartTime(ws.workStartTime.slice(0, 5));
+    setWsEndTime(ws.workEndTime.slice(0, 5));
+    setWsWorkDays(ws.workDays ?? [1, 2, 3, 4, 5]);
+    setWsIsDefault(ws.isDefault);
+    setShowWsDialog(true);
+  };
+
+  const toggleWsDay = (day: number) => {
+    setWsWorkDays((prev) =>
+      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort()
+    );
+  };
+
+  const handleSaveWs = async () => {
+    if (!wsName.trim()) return;
+    const payload = {
+      name: wsName.trim(),
+      daysPerWeek: wsDaysPerWeek,
+      hoursPerDay: wsHoursPerDay,
+      workDays: wsWorkDays,
+      workStartTime: wsStartTime,
+      workEndTime: wsEndTime,
+      isDefault: wsIsDefault,
+    };
+    try {
+      if (editingWs) {
+        await workSchedulesApi.update(editingWs.id, payload);
+        toast.success("แก้ไขตารางเวลาสำเร็จ");
+      } else {
+        await workSchedulesApi.create(payload);
+        toast.success("สร้างตารางเวลาสำเร็จ");
+      }
+      setShowWsDialog(false);
+      resetWsForm();
+      await loadSchedules();
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : "เกิดข้อผิดพลาด";
+      toast.error(msg);
+    }
+  };
+
+  const handleDeleteWs = async () => {
+    if (!deletingWsId) return;
+    try {
+      await workSchedulesApi.delete(deletingWsId);
+      toast.success("ลบตารางเวลาสำเร็จ");
+      setDeletingWsId(null);
+      await loadSchedules();
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : "เกิดข้อผิดพลาด";
+      toast.error(msg);
+      setDeletingWsId(null);
+    }
+  };
+
+  // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
-    <div>
-      {/* Position Row */}
-      <div 
-        className="flex items-center gap-2 py-2 px-2 rounded-lg hover:bg-muted/50 transition-colors group"
-        style={{ paddingLeft: `${level * 24 + 8}px` }}
-      >
-        {/* Expand/Collapse Button */}
-        <button
-          onClick={() => hasChildren && toggleExpand(position.id)}
-          className={`w-5 h-5 flex items-center justify-center rounded transition-colors ${
-            hasChildren ? "hover:bg-muted cursor-pointer" : "cursor-default"
-          }`}
-        >
-          {hasChildren ? (
-            isExpanded ? (
-              <ChevronDown className="h-4 w-4 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-            )
-          ) : (
-            <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30" />
-          )}
-        </button>
-
-        {/* Level Badge */}
-        <div 
-          className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0"
-          style={{ backgroundColor: position.color || levelColors[position.level] }}
-        >
-          {position.level}
-        </div>
-
-        {/* Position Info */}
-        <div className="flex-1 min-w-0 flex items-center gap-2">
-          <span className="font-medium truncate">{position.name}</span>
-          {position.jobLevel && (
-            <Badge variant="outline" className="text-xs font-mono shrink-0">
-              {position.jobLevel}
-            </Badge>
-          )}
-          {position.department && (
-            <Badge variant="secondary" className="text-xs shrink-0 hidden sm:inline-flex">
-              {position.department}
-            </Badge>
-          )}
-        </div>
-
-        {/* Users */}
-        <div className="flex items-center gap-1 shrink-0">
-          {positionUsers.slice(0, 3).map((user) => (
-            <Avatar 
-              key={user.id} 
-              className="h-6 w-6 border-2 border-background"
-              title={`${user.name}${(user.positionIds?.length || 0) > 1 ? ` (+${(user.positionIds?.length || 1) - 1} positions)` : ""}`}
-            >
-              <AvatarImage src={user.avatar} />
-              <AvatarFallback className="text-[10px]">
-                {user.name.split(" ").map((n) => n[0]).join("")}
-              </AvatarFallback>
-            </Avatar>
-          ))}
-          {positionUsers.length > 3 && (
-            <Badge variant="secondary" className="h-6 px-1.5 text-xs">
-              +{positionUsers.length - 3}
-            </Badge>
-          )}
-          {positionUsers.length === 0 && (
-            <span className="text-xs text-muted-foreground">
-              {language === "th" ? "ว่าง" : "Empty"}
-            </span>
-          )}
-        </div>
-
-        {/* Actions */}
-        <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={() => onAssign(position)}
-          >
-            <UserPlus className="h-3.5 w-3.5" />
+    <div className="flex flex-col gap-6 p-6">
+      {/* Header */}
+      <div className="flex items-center gap-4">
+        <Link href="/settings">
+          <Button variant="ghost" size="icon">
+            <ArrowLeft className="h-4 w-4" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={() => onEdit(position)}
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-destructive"
-            onClick={() => onDelete(position)}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+        </Link>
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Organization</h1>
+          <p className="text-muted-foreground">
+            Manage positions and work schedules
+          </p>
         </div>
       </div>
 
-      {/* Children */}
-      {hasChildren && isExpanded && (
-        <div className="relative">
-          {/* Vertical line connector */}
-          <div 
-            className="absolute left-0 top-0 bottom-0 w-px bg-border"
-            style={{ left: `${level * 24 + 18}px` }}
-          />
-          {children.map((child) => (
-            <TreeNode
-              key={child.id}
-              position={child}
-              level={level + 1}
-              expandedNodes={expandedNodes}
-              toggleExpand={toggleExpand}
-              getChildPositions={getChildPositions}
-              getUsersForPosition={getUsersForPosition}
-              levelColors={levelColors}
-              language={language}
-              onEdit={onEdit}
-              onDelete={onDelete}
-              onAssign={onAssign}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+      <Tabs defaultValue="positions">
+        <TabsList>
+          <TabsTrigger value="positions">
+            <Building2 className="mr-2 h-4 w-4" />
+            Positions
+          </TabsTrigger>
+          <TabsTrigger value="schedules">
+            <Clock className="mr-2 h-4 w-4" />
+            Work Schedules
+          </TabsTrigger>
+        </TabsList>
 
-export default function OrganizationPage() {
-  const { t, language } = useTranslation();
-  const { 
-    positions, 
-    users, 
-    addPosition, 
-    updatePosition, 
-    deletePosition,
-    addUserToPosition,
-    removeUserFromPosition,
-  } = useTaskStore();
-  
-  const [showDialog, setShowDialog] = useState(false);
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [editingPosition, setEditingPosition] = useState<Position | null>(null);
-  const [positionToDelete, setPositionToDelete] = useState<Position | null>(null);
-  
-  // Form state
-  const [name, setName] = useState("");
-  const [department, setDepartment] = useState("");
-  const [level, setLevel] = useState(5);
-  const [jobLevel, setJobLevel] = useState("");
-  const [parentPositionId, setParentPositionId] = useState<string | undefined>();
-  const [color, setColor] = useState("#3b82f6");
-  
-  // Assign user dialog
-  const [showAssignDialog, setShowAssignDialog] = useState(false);
-  const [assigningPosition, setAssigningPosition] = useState<Position | null>(null);
-  
-  // Group positions by level
-  const positionsByLevel = useMemo(() => {
-    const grouped: Record<number, Position[]> = {};
-    positions.forEach((pos) => {
-      if (!grouped[pos.level]) {
-        grouped[pos.level] = [];
-      }
-      grouped[pos.level].push(pos);
-    });
-    // Sort each level's positions by department then name
-    Object.keys(grouped).forEach((lvl) => {
-      grouped[Number(lvl)].sort((a, b) => {
-        if (a.department && b.department && a.department !== b.department) {
-          return a.department.localeCompare(b.department);
-        }
-        return a.name.localeCompare(b.name);
-      });
-    });
-    return grouped;
-  }, [positions]);
-
-  const levels = Object.keys(positionsByLevel).map(Number).sort((a, b) => a - b);
-
-  // Get users for a position
-  const getUsersForPosition = (positionId: string) => {
-    return users.filter((u) => u.positionIds?.includes(positionId));
-  };
-
-  // Get all positions a user holds
-  const getPositionsForUser = (userId: string) => {
-    const user = users.find((u) => u.id === userId);
-    if (!user || !user.positionIds) return [];
-    return user.positionIds.map((id) => positions.find((p) => p.id === id)).filter(Boolean) as Position[];
-  };
-
-  // Get unassigned users (users with no positions)
-  const unassignedUsers = useMemo(() => {
-    return users.filter((u) => !u.positionIds || u.positionIds.length === 0);
-  }, [users]);
-
-  const resetForm = () => {
-    setName("");
-    setDepartment("");
-    setLevel(5);
-    setJobLevel("");
-    setParentPositionId(undefined);
-    setColor("#3b82f6");
-    setEditingPosition(null);
-  };
-
-  const openCreateDialog = () => {
-    resetForm();
-    setShowDialog(true);
-  };
-
-  const openEditDialog = (position: Position) => {
-    setEditingPosition(position);
-    setName(position.name);
-    setDepartment(position.department || "");
-    setLevel(position.level);
-    setJobLevel(position.jobLevel || "");
-    setParentPositionId(position.parentPositionId);
-    setColor(position.color || "#3b82f6");
-    setShowDialog(true);
-  };
-
-  const handleSubmit = () => {
-    if (!name.trim()) return;
-
-    const positionData = {
-      name: name.trim(),
-      department: department.trim() || undefined,
-      level,
-      jobLevel: jobLevel.trim() || undefined,
-      parentPositionId,
-      color,
-    };
-
-    if (editingPosition) {
-      updatePosition(editingPosition.id, positionData);
-    } else {
-      const newPosition: Position = {
-        id: `pos-${Date.now()}`,
-        ...positionData,
-        createdAt: new Date(),
-      };
-      addPosition(newPosition);
-    }
-
-    setShowDialog(false);
-    resetForm();
-  };
-
-  const confirmDelete = (position: Position) => {
-    setPositionToDelete(position);
-    setShowDeleteDialog(true);
-  };
-
-  const handleDelete = () => {
-    if (positionToDelete) {
-      deletePosition(positionToDelete.id);
-      setShowDeleteDialog(false);
-      setPositionToDelete(null);
-    }
-  };
-
-  const openAssignDialog = (position: Position) => {
-    setAssigningPosition(position);
-    setShowAssignDialog(true);
-  };
-
-  const toggleUserPosition = (userId: string, positionId: string, isAssigned: boolean) => {
-    if (isAssigned) {
-      removeUserFromPosition(userId, positionId);
-    } else {
-      addUserToPosition(userId, positionId);
-    }
-  };
-
-  // Get parent position name
-  const getParentName = (parentId?: string) => {
-    if (!parentId) return null;
-    const parent = positions.find((p) => p.id === parentId);
-    return parent?.name;
-  };
-
-  return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b bg-card">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <Link href="/settings">
-                <Button variant="ghost" size="icon">
-                  <ArrowLeft className="h-4 w-4" />
-                </Button>
-              </Link>
-              <div>
-                <h1 className="text-2xl font-bold flex items-center gap-2">
-                  <Building2 className="h-6 w-6" />
-                  {language === "th" ? "โครงสร้างองค์กร" : "Organization Chart"}
-                </h1>
-                <p className="text-sm text-muted-foreground">
-                  {language === "th" 
-                    ? "จัดการตำแหน่งและโครงสร้างบริษัท" 
-                    : "Manage positions and company structure"}
-                </p>
-              </div>
+        {/* ── Positions Tab ──────────────────────────────────────────────── */}
+        <TabsContent value="positions" className="mt-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-lg font-semibold">Positions</h2>
+              <p className="text-sm text-muted-foreground">
+                Define job positions and organizational hierarchy
+              </p>
             </div>
-            <Button onClick={openCreateDialog}>
+            <Button onClick={openCreatePos}>
               <Plus className="mr-2 h-4 w-4" />
-              {language === "th" ? "เพิ่มตำแหน่ง" : "Add Position"}
+              Add Position
             </Button>
           </div>
-        </div>
-      </header>
 
-      <main className="container mx-auto px-4 py-6">
-        {/* Summary Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <Card>
-            <CardContent className="pt-4">
-              <div className="text-2xl font-bold">{positions.length}</div>
-              <p className="text-sm text-muted-foreground">
-                {language === "th" ? "ตำแหน่งทั้งหมด" : "Total Positions"}
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4">
-              <div className="text-2xl font-bold">{levels.length}</div>
-              <p className="text-sm text-muted-foreground">
-                {language === "th" ? "ระดับชั้น" : "Levels"}
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4">
-              <div className="text-2xl font-bold">{users.filter((u) => u.positionIds && u.positionIds.length > 0).length}</div>
-              <p className="text-sm text-muted-foreground">
-                {language === "th" ? "พนักงานมีตำแหน่ง" : "Assigned Users"}
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4">
-              <div className="text-2xl font-bold">{unassignedUsers.length}</div>
-              <p className="text-sm text-muted-foreground">
-                {language === "th" ? "ยังไม่มีตำแหน่ง" : "Unassigned"}
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Organization Chart by Level */}
-        <div className="space-y-6">
-          {levels.map((lvl) => (
-            <div key={lvl} className="relative">
-              {/* Level Header */}
-              <div 
-                className="sticky top-0 z-10 flex items-center gap-3 py-2 px-4 rounded-lg mb-3"
-                style={{ backgroundColor: `${levelColors[lvl]}15` }}
-              >
-                <div 
-                  className="w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-sm"
-                  style={{ backgroundColor: levelColors[lvl] }}
-                >
-                  {lvl}
-                </div>
-                <div>
-                  <h3 className="font-semibold" style={{ color: levelColors[lvl] }}>
-                    Level {lvl}: {language === "th" ? levelLabels[lvl]?.th : levelLabels[lvl]?.en || `Level ${lvl}`}
-                  </h3>
-                  <p className="text-xs text-muted-foreground">
-                    {positionsByLevel[lvl]?.length || 0} {language === "th" ? "ตำแหน่ง" : "positions"}
-                  </p>
-                </div>
-              </div>
-
-              {/* Positions in this level */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 pl-4">
-                {positionsByLevel[lvl]?.map((position) => {
-                  const positionUsers = getUsersForPosition(position.id);
-                  const parentName = getParentName(position.parentPositionId);
-                  
-                  return (
-                    <Card key={position.id} className="relative overflow-hidden">
-                      {/* Color bar */}
-                      <div 
-                        className="absolute top-0 left-0 right-0 h-1"
-                        style={{ backgroundColor: position.color || levelColors[lvl] }}
-                      />
-                      
-                      <CardHeader className="pb-2 pt-4">
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1 min-w-0">
-                            <CardTitle className="text-base truncate flex items-center gap-2">
-                              <Briefcase 
-                                className="h-4 w-4 shrink-0" 
-                                style={{ color: position.color || levelColors[lvl] }}
+          {posLoading ? (
+            <div className="py-12 text-center text-muted-foreground">Loading...</div>
+          ) : positions.length === 0 ? (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <Building2 className="mx-auto h-12 w-12 text-muted-foreground/50" />
+                <h3 className="mt-4 text-lg font-semibold">No positions yet</h3>
+                <p className="mt-2 text-muted-foreground">
+                  Create positions to build your org chart
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardContent className="p-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Position</TableHead>
+                      <TableHead>Department</TableHead>
+                      <TableHead>Level</TableHead>
+                      <TableHead>Code</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {positions.map((pos) => (
+                      <TableRow key={pos.id}>
+                        <TableCell>
+                          <div className="flex items-center gap-3">
+                            <div
+                              className="h-8 w-8 rounded flex items-center justify-center"
+                              style={{ backgroundColor: `${pos.color}20` }}
+                            >
+                              <Building2
+                                className="h-4 w-4"
+                                style={{ color: pos.color }}
                               />
-                              {position.name}
-                            </CardTitle>
-                            <div className="flex flex-wrap items-center gap-2 mt-1">
-                              {position.department && (
-                                <Badge variant="secondary" className="text-xs">
-                                  {position.department}
-                                </Badge>
-                              )}
-                              {position.jobLevel && (
-                                <Badge variant="outline" className="text-xs font-mono">
-                                  {position.jobLevel}
-                                </Badge>
+                            </div>
+                            <div>
+                              <p className="font-medium">{pos.name}</p>
+                              {pos.parentPositionId && (
+                                <p className="text-xs text-muted-foreground">
+                                  ↳ {positions.find((p) => p.id === pos.parentPositionId)?.name ?? "Sub-position"}
+                                </p>
                               )}
                             </div>
                           </div>
-                          <div className="flex gap-1 shrink-0">
+                        </TableCell>
+                        <TableCell>{pos.department ?? "-"}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">
+                            L{pos.level} · {levelLabels[pos.level] ?? "Staff"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm">
+                          {pos.jobLevelCode ?? "-"}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={pos.isActive ? "default" : "secondary"}>
+                            {pos.isActive ? "Active" : "Inactive"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-7 w-7"
-                              onClick={() => openAssignDialog(position)}
-                            >
-                              <UserPlus className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7"
-                              onClick={() => openEditDialog(position)}
+                              className="h-8 w-8"
+                              onClick={() => openEditPos(pos)}
                             >
                               <Pencil className="h-3.5 w-3.5" />
                             </Button>
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-7 w-7 text-destructive"
-                              onClick={() => confirmDelete(position)}
+                              className="h-8 w-8 text-destructive hover:text-destructive"
+                              onClick={() => setDeletingPosId(pos.id)}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
                           </div>
-                        </div>
-                      </CardHeader>
-                      
-                      <CardContent className="pt-0">
-                        {/* Reports to */}
-                        {parentName && (
-                          <p className="text-xs text-muted-foreground mb-2">
-                            {language === "th" ? "รายงานต่อ:" : "Reports to:"} {parentName}
-                          </p>
-                        )}
-                        
-                        {/* Assigned Users */}
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-muted-foreground flex items-center gap-1">
-                              <Users className="h-3 w-3" />
-                              {positionUsers.length} {language === "th" ? "คน" : "users"}
-                            </span>
-                          </div>
-                          
-                          {positionUsers.length > 0 ? (
-                            <div className="flex flex-wrap gap-1">
-                              {positionUsers.slice(0, 5).map((user) => (
-                                <div 
-                                  key={user.id}
-                                  className="flex items-center gap-1 bg-muted rounded-full px-2 py-0.5"
-                                  title={`${user.name} - ${getPositionsForUser(user.id).map(p => p.name).join(", ")}`}
-                                >
-                                  <Avatar className="h-4 w-4">
-                                    <AvatarImage src={user.avatar} />
-                                    <AvatarFallback className="text-[8px]">
-                                      {user.name.split(" ").map((n) => n[0]).join("")}
-                                    </AvatarFallback>
-                                  </Avatar>
-                                  <span className="text-xs truncate max-w-[80px]">{user.name.split(" ")[0]}</span>
-                                  {(user.positionIds?.length || 0) > 1 && (
-                                    <Badge variant="secondary" className="h-4 px-1 text-[10px]">
-                                      +{(user.positionIds?.length || 1) - 1}
-                                    </Badge>
-                                  )}
-                                </div>
-                              ))}
-                              {positionUsers.length > 5 && (
-                                <Badge variant="secondary" className="text-xs">
-                                  +{positionUsers.length - 5}
-                                </Badge>
-                              )}
-                            </div>
-                          ) : (
-                            <p className="text-xs text-muted-foreground italic">
-                              {language === "th" ? "ยังไม่มีพนักงาน" : "No users assigned"}
-                            </p>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-
-          {levels.length === 0 && (
-            <Card className="p-8 text-center">
-              <Building2 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <h3 className="text-lg font-medium mb-2">
-                {language === "th" ? "ยังไม่มีตำแหน่ง" : "No Positions Yet"}
-              </h3>
-              <p className="text-muted-foreground mb-4">
-                {language === "th" 
-                  ? "เริ่มต้นสร้างโครงสร้างองค์กรด้วยการเพิ่มตำแหน่ง" 
-                  : "Start building your org chart by adding positions"}
-              </p>
-              <Button onClick={openCreateDialog}>
-                <Plus className="mr-2 h-4 w-4" />
-                {language === "th" ? "เพิ่มตำแหน่งแรก" : "Add First Position"}
-              </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
             </Card>
           )}
-        </div>
+        </TabsContent>
 
-        {/* Unassigned Users Section */}
-        {unassignedUsers.length > 0 && (
-          <div className="mt-8">
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Users className="h-5 w-5 text-muted-foreground" />
-              {language === "th" ? "พนักงานที่ยังไม่มีตำแหน่ง" : "Unassigned Users"}
-              <Badge variant="secondary">{unassignedUsers.length}</Badge>
-            </h3>
-            <div className="flex flex-wrap gap-2">
-              {unassignedUsers.map((user) => (
-                <div 
-                  key={user.id}
-                  className="flex items-center gap-2 bg-muted rounded-lg px-3 py-2"
-                >
-                  <Avatar className="h-6 w-6">
-                    <AvatarImage src={user.avatar} />
-                    <AvatarFallback className="text-xs">
-                      {user.name.split(" ").map((n) => n[0]).join("")}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="text-sm">{user.name}</span>
-                </div>
-              ))}
+        {/* ── Work Schedules Tab ─────────────────────────────────────────── */}
+        <TabsContent value="schedules" className="mt-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-lg font-semibold">Work Schedules</h2>
+              <p className="text-sm text-muted-foreground">
+                Define work hours and days for employee performance calculation
+              </p>
             </div>
+            <Button onClick={openCreateWs}>
+              <Plus className="mr-2 h-4 w-4" />
+              Add Schedule
+            </Button>
           </div>
-        )}
-      </main>
 
-      {/* Create/Edit Position Dialog */}
-      <Dialog open={showDialog} onOpenChange={setShowDialog}>
+          {wsLoading ? (
+            <div className="py-12 text-center text-muted-foreground">Loading...</div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {schedules.map((ws) => (
+                <Card key={ws.id} className={ws.isDefault ? "border-primary" : ""}>
+                  <CardHeader className="pb-3">
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-2">
+                        <Clock className="h-5 w-5 text-muted-foreground" />
+                        <CardTitle className="text-base">{ws.name}</CardTitle>
+                      </div>
+                      <div className="flex gap-1 items-center">
+                        {ws.isDefault && (
+                          <Badge variant="default" className="text-xs gap-1">
+                            <Star className="h-3 w-3" />
+                            Default
+                          </Badge>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          onClick={() => openEditWs(ws)}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-destructive hover:text-destructive"
+                          onClick={() => setDeletingWsId(ws.id)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="grid grid-cols-3 gap-2 text-sm">
+                      <div className="text-center p-2 bg-muted/50 rounded">
+                        <p className="text-muted-foreground text-xs">Days/Week</p>
+                        <p className="font-bold">{ws.daysPerWeek}</p>
+                      </div>
+                      <div className="text-center p-2 bg-muted/50 rounded">
+                        <p className="text-muted-foreground text-xs">Hrs/Day</p>
+                        <p className="font-bold">{ws.hoursPerDay}</p>
+                      </div>
+                      <div className="text-center p-2 bg-muted/50 rounded">
+                        <p className="text-muted-foreground text-xs">Hrs/Week</p>
+                        <p className="font-bold">{ws.hoursPerWeek ?? "—"}</p>
+                      </div>
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      {ws.workStartTime?.slice(0, 5)} – {ws.workEndTime?.slice(0, 5)}
+                    </div>
+                    <div className="flex gap-1">
+                      {[0, 1, 2, 3, 4, 5, 6].map((d) => (
+                        <span
+                          key={d}
+                          className={`text-xs px-1.5 py-0.5 rounded ${
+                            ws.workDays?.includes(d)
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          {dayNames[d]}
+                        </span>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+              {schedules.length === 0 && (
+                <div className="col-span-3 py-12 text-center text-muted-foreground">
+                  No work schedules defined yet
+                </div>
+              )}
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      {/* ── Position Create/Edit Dialog ──────────────────────────────────── */}
+      <Dialog
+        open={showPosDialog}
+        onOpenChange={(open) => {
+          setShowPosDialog(open);
+          if (!open) resetPosForm();
+        }}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>
-              {editingPosition 
-                ? (language === "th" ? "แก้ไขตำแหน่ง" : "Edit Position")
-                : (language === "th" ? "เพิ่มตำแหน่งใหม่" : "Add New Position")}
-            </DialogTitle>
+            <DialogTitle>{editingPos ? "Edit Position" : "Add Position"}</DialogTitle>
             <DialogDescription>
-              {language === "th" 
-                ? "กรอกข้อมูลตำแหน่งในองค์กร" 
-                : "Fill in the position details"}
+              {editingPos ? "Update position details." : "Create a new position in the organization."}
             </DialogDescription>
           </DialogHeader>
-
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label>{language === "th" ? "ชื่อตำแหน่ง" : "Position Name"}</Label>
+              <Label>Name *</Label>
               <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={language === "th" ? "เช่น Engineering Manager" : "e.g., Engineering Manager"}
+                value={posName}
+                onChange={(e) => setPosName(e.target.value)}
+                placeholder="e.g., Software Engineer"
               />
             </div>
-
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>{language === "th" ? "ระดับ" : "Level"}</Label>
-                <Select value={level.toString()} onValueChange={(v) => setLevel(parseInt(v))}>
+                <Label>Department</Label>
+                <Input
+                  value={posDept}
+                  onChange={(e) => setPosDept(e.target.value)}
+                  placeholder="e.g., Engineering"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Level</Label>
+                <Select value={String(posLevel)} onValueChange={(v) => setPosLevel(Number(v))}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {[1, 2, 3, 4, 5, 6].map((l) => (
-                      <SelectItem key={l} value={l.toString()}>
-                        <div className="flex items-center gap-2">
-                          <div 
-                            className="w-3 h-3 rounded-full"
-                            style={{ backgroundColor: levelColors[l] }}
-                          />
-                          {l} - {language === "th" ? levelLabels[l]?.th : levelLabels[l]?.en}
-                        </div>
+                    {Object.entries(levelLabels).map(([lvl, label]) => (
+                      <SelectItem key={lvl} value={lvl}>
+                        L{lvl} — {label}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
-
-              <div className="space-y-2">
-                <Label>{language === "th" ? "Job Level" : "Job Level"}</Label>
-                <Input
-                  value={jobLevel}
-                  onChange={(e) => setJobLevel(e.target.value)}
-                  placeholder="e.g., M1, S2, C1"
-                />
-              </div>
             </div>
-
             <div className="space-y-2">
-              <Label>{language === "th" ? "แผนก" : "Department"}</Label>
+              <Label>Job Level Code</Label>
               <Input
-                value={department}
-                onChange={(e) => setDepartment(e.target.value)}
-                placeholder={language === "th" ? "เช่น Engineering" : "e.g., Engineering"}
+                value={posJobLevelCode}
+                onChange={(e) => setPosJobLevelCode(e.target.value)}
+                placeholder="e.g., SE-L5"
               />
             </div>
-
             <div className="space-y-2">
-              <Label>{language === "th" ? "รายงานต่อ" : "Reports To"}</Label>
-              <Select 
-                value={parentPositionId || "none"} 
-                onValueChange={(v) => setParentPositionId(v === "none" ? undefined : v)}
-              >
+              <Label>Parent Position</Label>
+              <Select value={posParentId} onValueChange={setPosParentId}>
                 <SelectTrigger>
-                  <SelectValue placeholder={language === "th" ? "เลือกตำแหน่งหัวหน้า" : "Select manager position"} />
+                  <SelectValue placeholder="None (top-level)" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">
-                    {language === "th" ? "ไม่มี (ตำแหน่งสูงสุด)" : "None (Top Position)"}
-                  </SelectItem>
+                  <SelectItem value="none">None (top-level)</SelectItem>
                   {positions
-                    .filter((p) => p.id !== editingPosition?.id)
-                    .sort((a, b) => a.level - b.level || a.name.localeCompare(b.name))
-                    .map((pos) => (
-                      <SelectItem key={pos.id} value={pos.id}>
-                        <div className="flex items-center gap-2">
-                          <Badge 
-                            variant="outline" 
-                            className="w-6 h-5 flex items-center justify-center text-xs"
-                            style={{ borderColor: levelColors[pos.level], color: levelColors[pos.level] }}
-                          >
-                            {pos.level}
-                          </Badge>
-                          {pos.name}
-                          {pos.jobLevel && (
-                            <span className="text-xs text-muted-foreground">({pos.jobLevel})</span>
-                          )}
-                        </div>
+                    .filter((p) => !editingPos || p.id !== editingPos.id)
+                    .map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
                       </SelectItem>
                     ))}
                 </SelectContent>
               </Select>
             </div>
-
             <div className="space-y-2">
-              <Label>{language === "th" ? "สี" : "Color"}</Label>
+              <Label>Color</Label>
               <div className="flex flex-wrap gap-2">
-                {defaultColors.map((c) => (
+                {colorOptions.map((c) => (
                   <button
                     key={c}
                     type="button"
-                    className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${
-                      color === c ? "border-foreground scale-110" : "border-transparent"
+                    className={`h-7 w-7 rounded-full transition-all ${
+                      posColor === c ? "ring-2 ring-offset-2 ring-primary" : ""
                     }`}
                     style={{ backgroundColor: c }}
-                    onClick={() => setColor(c)}
+                    onClick={() => setPosColor(c)}
                   />
                 ))}
               </div>
             </div>
           </div>
-
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDialog(false)}>
-              {language === "th" ? "ยกเลิก" : "Cancel"}
+            <Button variant="outline" onClick={() => setShowPosDialog(false)}>
+              Cancel
             </Button>
-            <Button onClick={handleSubmit} disabled={!name.trim()}>
-              {editingPosition 
-                ? (language === "th" ? "บันทึก" : "Save Changes")
-                : (language === "th" ? "เพิ่ม" : "Add Position")}
+            <Button onClick={handleSavePos} disabled={!posName.trim()}>
+              {editingPos ? "Save Changes" : "Create Position"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation Dialog */}
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+      {/* ── Work Schedule Create/Edit Dialog ────────────────────────────── */}
+      <Dialog
+        open={showWsDialog}
+        onOpenChange={(open) => {
+          setShowWsDialog(open);
+          if (!open) resetWsForm();
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{editingWs ? "Edit Work Schedule" : "Add Work Schedule"}</DialogTitle>
+            <DialogDescription>
+              {editingWs ? "Update schedule details." : "Create a new work schedule."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Name *</Label>
+              <Input
+                value={wsName}
+                onChange={(e) => setWsName(e.target.value)}
+                placeholder="e.g., Mon-Fri Full Time"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Days / Week</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={7}
+                  value={wsDaysPerWeek}
+                  onChange={(e) => setWsDaysPerWeek(Number(e.target.value))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Hours / Day</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={24}
+                  value={wsHoursPerDay}
+                  onChange={(e) => setWsHoursPerDay(Number(e.target.value))}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Start Time</Label>
+                <Input
+                  type="time"
+                  value={wsStartTime}
+                  onChange={(e) => setWsStartTime(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>End Time</Label>
+                <Input
+                  type="time"
+                  value={wsEndTime}
+                  onChange={(e) => setWsEndTime(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Work Days</Label>
+              <div className="flex gap-2">
+                {dayNames.map((day, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    className={`h-9 w-9 rounded text-sm font-medium transition-colors ${
+                      wsWorkDays.includes(idx)
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground hover:bg-muted/80"
+                    }`}
+                    onClick={() => toggleWsDay(idx)}
+                  >
+                    {day}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <Separator />
+            <div className="flex items-center justify-between">
+              <div>
+                <Label>Set as Default</Label>
+                <p className="text-xs text-muted-foreground">
+                  Used as the default schedule for new employees
+                </p>
+              </div>
+              <Switch checked={wsIsDefault} onCheckedChange={setWsIsDefault} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowWsDialog(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveWs} disabled={!wsName.trim()}>
+              {editingWs ? "Save Changes" : "Create Schedule"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Delete Position Confirmation ─────────────────────────────────── */}
+      <AlertDialog
+        open={!!deletingPosId}
+        onOpenChange={(open) => { if (!open) setDeletingPosId(null); }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>
-              {language === "th" ? "ยืนยันการลบ" : "Confirm Delete"}
-            </AlertDialogTitle>
+            <AlertDialogTitle>Delete Position?</AlertDialogTitle>
             <AlertDialogDescription>
-              {language === "th"
-                ? `คุณต้องการลบตำแหน่ง "${positionToDelete?.name}" ใช่หรือไม่? การดำเนินการนี้ไม่สามารถย้อนกลับได้`
-                : `Are you sure you want to delete "${positionToDelete?.name}"? This action cannot be undone.`}
+              This will deactivate the position. Employees in this position must be reassigned first.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>
-              {language === "th" ? "ยกเลิก" : "Cancel"}
-            </AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">
-              {language === "th" ? "ลบ" : "Delete"}
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={handleDeletePos}
+            >
+              Delete
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Assign Users Dialog */}
-      <Dialog open={showAssignDialog} onOpenChange={setShowAssignDialog}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <UserPlus className="h-5 w-5" />
-              {language === "th" ? "จัดการพนักงานในตำแหน่ง" : "Manage Position Users"}
-            </DialogTitle>
-            <DialogDescription>
-              {assigningPosition?.name}
-              {assigningPosition?.jobLevel && ` (${assigningPosition.jobLevel})`}
-            </DialogDescription>
-          </DialogHeader>
-
-          <ScrollArea className="max-h-[400px]">
-            <div className="space-y-2 py-4">
-              {users.map((user) => {
-                const isAssigned = user.positionIds?.includes(assigningPosition?.id || "");
-                const userPositions = getPositionsForUser(user.id);
-                
-                return (
-                  <div 
-                    key={user.id}
-                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                      isAssigned ? "bg-primary/5 border-primary/20" : "hover:bg-muted"
-                    }`}
-                    onClick={() => assigningPosition && toggleUserPosition(user.id, assigningPosition.id, isAssigned || false)}
-                  >
-                    <Checkbox checked={isAssigned} />
-                    <Avatar className="h-8 w-8">
-                      <AvatarImage src={user.avatar} />
-                      <AvatarFallback>
-                        {user.name.split(" ").map((n) => n[0]).join("")}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm">{user.name}</p>
-                      <p className="text-xs text-muted-foreground truncate">{user.email}</p>
-                      {userPositions.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {userPositions.map((pos) => (
-                            <Badge 
-                              key={pos.id} 
-                              variant="secondary" 
-                              className="text-[10px] px-1 h-4"
-                              style={{ 
-                                backgroundColor: `${pos.color}20`,
-                                color: pos.color,
-                              }}
-                            >
-                              {pos.name}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </ScrollArea>
-
-          <DialogFooter>
-            <Button onClick={() => setShowAssignDialog(false)}>
-              {language === "th" ? "เสร็จสิ้น" : "Done"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* ── Delete Work Schedule Confirmation ───────────────────────────── */}
+      <AlertDialog
+        open={!!deletingWsId}
+        onOpenChange={(open) => { if (!open) setDeletingWsId(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Work Schedule?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This schedule will be deleted. Employees assigned to it must be updated.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={handleDeleteWs}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -41,6 +41,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
 import { useTaskStore } from "@/lib/store";
+import { useHolidays } from "@/hooks/use-holidays";
 import type { Task, LeaveRecord, LeaveType, Priority } from "@/lib/types";
 import { calculatePlanFinish, storyPointsOptions } from "@/lib/types";
 
@@ -107,6 +108,9 @@ export default function MyCalendarPage() {
   
   // Local leaves state (would be in store in production)
   const [leaves, setLeaves] = useState<LeaveRecord[]>([]);
+  const [leaveDaysCount, setLeaveDaysCount] = useState(0);
+
+  const { getWorkingDays } = useHolidays();
 
   // Get current user's tasks (mock user-1)
   const currentUserId = "user-1";
@@ -258,7 +262,19 @@ export default function MyCalendarPage() {
   };
 
   // Handle create leave
-  const handleCreateLeave = () => {
+  const handleCreateLeave = async () => {
+    const startStr = format(leaveStartDate, "yyyy-MM-dd");
+    const endStr = format(leaveEndDate, "yyyy-MM-dd");
+    
+    try {
+      const result = await getWorkingDays(startStr, endStr);
+      setLeaveDaysCount(result.workingDays);
+    } catch {
+      const diffTime = Math.abs(leaveEndDate.getTime() - leaveStartDate.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+      setLeaveDaysCount(diffDays);
+    }
+    
     const newLeave: LeaveRecord = {
       id: `leave-${Date.now()}`,
       userId: currentUserId,
@@ -798,6 +814,18 @@ export default function MyCalendarPage() {
                 </Popover>
               </div>
             </div>
+
+            {/* Working Days Count */}
+            {leaveDaysCount > 0 && (
+              <div className="rounded-lg bg-muted p-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">
+                    {language === "th" ? "จำนวนวันทำงาน" : "Working Days"}
+                  </span>
+                  <span className="font-semibold">{leaveDaysCount}</span>
+                </div>
+              </div>
+            )}
 
             {/* Note */}
             <div className="space-y-2">

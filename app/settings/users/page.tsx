@@ -1,17 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
   Plus,
   Pencil,
-  Trash2,
   UserPlus,
-  Settings2,
-  Shield,
   Building2,
+  UserX,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -19,9 +18,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Slider } from "@/components/ui/slider";
 import {
   Dialog,
   DialogContent,
@@ -39,7 +35,6 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import {
   Select,
@@ -56,37 +51,70 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useTaskStore } from "@/lib/store";
-import type { User, PointRatio } from "@/lib/types";
-import { defaultPointRatios } from "@/lib/types";
+import { Switch } from "@/components/ui/switch";
+import { employeesApi, type Employee, type CreateEmployeePayload, type UpdateEmployeePayload } from "@/lib/api/employees";
+import { rolesApi, type Role } from "@/lib/api/roles";
+import { positionsApi, type Position } from "@/lib/api/positions";
 import { format } from "date-fns";
 
 export default function UsersPage() {
-  const { users, roles, positions, tasks, addUser, updateUser, deleteUser, setUserPointRatio } = useTaskStore();
-  const [showDialog, setShowDialog] = useState(false);
-  const [showPointRatioDialog, setShowPointRatioDialog] = useState(false);
-  const [editingUser, setEditingUser] = useState<User | null>(null);
-  const [selectedUserForRatio, setSelectedUserForRatio] = useState<User | null>(null);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [totalEmployees, setTotalEmployees] = useState(0);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [positions, setPositions] = useState<Position[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Form state
+  const [showDialog, setShowDialog] = useState(false);
+  const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [deactivateEmployeeId, setDeactivateEmployeeId] = useState<string | null>(null);
+
+  // Create form state
+  const [employeeCode, setEmployeeCode] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [roleId, setRoleId] = useState<string>("");
-  const [selectedPositionIds, setSelectedPositionIds] = useState<string[]>([]);
-  const [legacyRole, setLegacyRole] = useState<"admin" | "member" | "viewer">("member");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<"employee" | "manager" | "hr" | "admin">("employee");
+  const [roleId, setRoleId] = useState("");
+  const [positionId, setPositionId] = useState("");
+  const [department, setDepartment] = useState("");
+  const [isActive, setIsActive] = useState(true);
 
-  // Point ratio form state
-  const [useCustomRatio, setUseCustomRatio] = useState(false);
-  const [pointRatioType, setPointRatioType] = useState<string>("80/20");
-  const [customPointedPercent, setCustomPointedPercent] = useState(80);
+  const loadData = async () => {
+    try {
+      setIsLoading(true);
+      const [empRes, rolesData, positionsData] = await Promise.all([
+        employeesApi.list({ limit: 100 }),
+        rolesApi.list(),
+        positionsApi.list(),
+      ]);
+      setEmployees(empRes.rows);
+      setTotalEmployees(empRes.total);
+      setRoles(rolesData);
+      setPositions(positionsData);
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to load data");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
 
   const resetForm = () => {
+    setEmployeeCode("");
     setName("");
     setEmail("");
+    setPassword("");
+    setRole("employee");
     setRoleId("");
-    setSelectedPositionIds([]);
-    setLegacyRole("member");
-    setEditingUser(null);
+    setPositionId("");
+    setDepartment("");
+    setIsActive(true);
+    setEditingEmployee(null);
   };
 
   const openCreateDialog = () => {
@@ -94,122 +122,80 @@ export default function UsersPage() {
     setShowDialog(true);
   };
 
-  const openEditDialog = (user: User) => {
-    setEditingUser(user);
-    setName(user.name);
-    setEmail(user.email);
-    setRoleId(user.roleId || "");
-    setSelectedPositionIds(user.positionIds || []);
-    setLegacyRole(user.role);
+  const openEditDialog = (emp: Employee) => {
+    setEditingEmployee(emp);
+    setName(emp.name);
+    setEmail(emp.email || "");
+    setRole(emp.role);
+    setRoleId("");
+    setPositionId("");
+    setDepartment(emp.department || "");
+    setIsActive(emp.isActive);
     setShowDialog(true);
   };
 
-  const openPointRatioDialog = (user: User) => {
-    setSelectedUserForRatio(user);
-    setUseCustomRatio(!!user.customPointRatio);
-    
-    if (user.customPointRatio) {
-      const ratioKey = Object.entries(defaultPointRatios).find(
-        ([, ratio]) => ratio.pointedWorkPercent === user.customPointRatio?.pointedWorkPercent
-      )?.[0];
-      
-      if (ratioKey) {
-        setPointRatioType(ratioKey);
-      } else {
-        setPointRatioType("custom");
-        setCustomPointedPercent(user.customPointRatio.pointedWorkPercent);
-      }
-    } else {
-      setPointRatioType("80/20");
-      setCustomPointedPercent(80);
-    }
-    
-    setShowPointRatioDialog(true);
-  };
+  const handleSubmit = async () => {
+    if (!name.trim()) return;
+    setIsSaving(true);
 
-  const handleSubmit = () => {
-    if (!name.trim() || !email.trim()) return;
-
-    const userData: Partial<User> = {
-      name: name.trim(),
-      email: email.trim(),
-      role: legacyRole,
-      roleId: roleId || undefined,
-      positionIds: selectedPositionIds.length > 0 ? selectedPositionIds : undefined,
-    };
-
-    if (editingUser) {
-      updateUser(editingUser.id, userData);
-    } else {
-      const newUser: User = {
-        id: `user-${Date.now()}`,
-        name: name.trim(),
-        email: email.trim(),
-        role: legacyRole,
-        roleId: roleId || undefined,
-        positionIds: selectedPositionIds.length > 0 ? selectedPositionIds : undefined,
-        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${name.trim().replace(/\s/g, "")}`,
-        createdAt: new Date(),
-      };
-      addUser(newUser);
-    }
-
-    setShowDialog(false);
-    resetForm();
-  };
-
-  const handleSavePointRatio = () => {
-    if (!selectedUserForRatio) return;
-
-    if (!useCustomRatio) {
-      setUserPointRatio(selectedUserForRatio.id, undefined);
-    } else {
-      let ratio: PointRatio;
-      if (pointRatioType === "custom") {
-        ratio = {
-          pointedWorkPercent: customPointedPercent,
-          nonPointedWorkPercent: 100 - customPointedPercent,
+    try {
+      if (editingEmployee) {
+        const payload: UpdateEmployeePayload = {
+          name: name.trim(),
+          email: email.trim() || undefined,
+          roleId: roleId || undefined,
+          positionId: positionId || undefined,
+          department: department.trim() || undefined,
+          isActive,
         };
+        await employeesApi.update(editingEmployee.id, payload);
+        toast.success("Employee updated");
       } else {
-        ratio = defaultPointRatios[pointRatioType] || defaultPointRatios["80/20"];
+        if (!employeeCode.trim() || !password.trim()) return;
+        const payload: CreateEmployeePayload = {
+          employeeCode: employeeCode.trim(),
+          name: name.trim(),
+          email: email.trim() || undefined,
+          password: password.trim(),
+          role,
+          roleId: roleId || undefined,
+          positionId: positionId || undefined,
+          department: department.trim() || undefined,
+        };
+        await employeesApi.create(payload);
+        toast.success("Employee created");
       }
-      setUserPointRatio(selectedUserForRatio.id, ratio);
+      setShowDialog(false);
+      resetForm();
+      await loadData();
+    } catch (err) {
+      console.error(err);
+      toast.error(editingEmployee ? "Failed to update employee" : "Failed to create employee");
+    } finally {
+      setIsSaving(false);
     }
-
-    setShowPointRatioDialog(false);
-    setSelectedUserForRatio(null);
   };
 
-  const getRoleForUser = (user: User) => {
-    if (user.roleId) {
-      return roles.find((r) => r.id === user.roleId);
+  const handleDeactivate = async () => {
+    if (!deactivateEmployeeId) return;
+    try {
+      await employeesApi.deactivate(deactivateEmployeeId);
+      toast.success("Employee deactivated");
+      setDeactivateEmployeeId(null);
+      await loadData();
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to deactivate employee");
     }
-    return null;
   };
 
-  const getPositionsForUser = (user: User) => {
-    if (user.positionIds && user.positionIds.length > 0) {
-      return user.positionIds
-        .map((id) => positions.find((p) => p.id === id))
-        .filter(Boolean) as typeof positions;
-    }
-    return [];
-  };
+  const deactivatingEmployee = employees.find((e) => e.id === deactivateEmployeeId);
+  const activeCount = employees.filter((e) => e.isActive).length;
+  const adminCount = employees.filter((e) => e.role === "admin").length;
 
-  const getEffectivePointRatio = (user: User) => {
-    if (user.customPointRatio) {
-      return user.customPointRatio;
-    }
-    const role = getRoleForUser(user);
-    if (role) {
-      return role.pointRatio;
-    }
-    return { pointedWorkPercent: 80, nonPointedWorkPercent: 20 };
-  };
-
-  const getTaskCountForUser = (userId: string) => {
-    return tasks.filter((t) => t.assigneeIds.includes(userId)).length;
-  };
+  const isCreateFormValid = !editingEmployee
+    ? name.trim() && employeeCode.trim() && password.trim()
+    : name.trim();
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -221,14 +207,14 @@ export default function UsersPage() {
           </Button>
         </Link>
         <div className="flex-1">
-          <h1 className="text-2xl font-bold tracking-tight">User Management</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Employee Management</h1>
           <p className="text-muted-foreground">
-            Create users, assign roles, and configure individual point ratios.
+            Create employees, assign roles and positions.
           </p>
         </div>
         <Button onClick={openCreateDialog}>
           <UserPlus className="mr-2 h-4 w-4" />
-          Add User
+          Add Employee
         </Button>
       </div>
 
@@ -236,20 +222,20 @@ export default function UsersPage() {
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardContent className="pt-6">
-            <div className="text-2xl font-bold">{users.length}</div>
-            <p className="text-sm text-muted-foreground">Total Users</p>
+            <div className="text-2xl font-bold">{totalEmployees}</div>
+            <p className="text-sm text-muted-foreground">Total Employees</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
-            <div className="text-2xl font-bold">{users.filter((u) => u.role === "admin").length}</div>
+            <div className="text-2xl font-bold">{activeCount}</div>
+            <p className="text-sm text-muted-foreground">Active</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-2xl font-bold">{adminCount}</div>
             <p className="text-sm text-muted-foreground">Admins</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-2xl font-bold">{users.filter((u) => u.customPointRatio).length}</div>
-            <p className="text-sm text-muted-foreground">Custom Ratios</p>
           </CardContent>
         </Card>
         <Card>
@@ -260,98 +246,80 @@ export default function UsersPage() {
         </Card>
       </div>
 
-      {/* Users Table */}
+      {/* Employees Table */}
       <Card>
         <CardHeader>
-          <CardTitle>All Users</CardTitle>
+          <CardTitle>All Employees</CardTitle>
           <CardDescription>
-            Manage user accounts, roles, and point ratio settings.
+            Manage employee accounts, roles, and positions.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>User</TableHead>
-                <TableHead>Position</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Point Ratio</TableHead>
-                <TableHead>Tasks</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {users.map((user) => {
-                const role = getRoleForUser(user);
-                const userPositions = getPositionsForUser(user);
-                const pointRatio = getEffectivePointRatio(user);
-                const taskCount = getTaskCountForUser(user.id);
-
-                return (
-                  <TableRow key={user.id}>
+          {isLoading ? (
+            <div className="py-12 text-center text-muted-foreground">Loading...</div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Employee</TableHead>
+                  <TableHead>Code</TableHead>
+                  <TableHead>Department</TableHead>
+                  <TableHead>Role</TableHead>
+                  <TableHead>Position</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {employees.map((emp) => (
+                  <TableRow key={emp.id}>
                     <TableCell>
                       <div className="flex items-center gap-3">
                         <Avatar className="h-9 w-9">
-                          <AvatarImage src={user.avatar} />
-                          <AvatarFallback>{user.name.charAt(0)}</AvatarFallback>
+                          <AvatarImage src={emp.avatarUrl || undefined} />
+                          <AvatarFallback>{emp.name.charAt(0)}</AvatarFallback>
                         </Avatar>
                         <div>
-                          <p className="font-medium">{user.name}</p>
-                          <p className="text-sm text-muted-foreground">{user.email}</p>
+                          <p className="font-medium">{emp.name}</p>
+                          <p className="text-sm text-muted-foreground">{emp.email || "-"}</p>
                         </div>
                       </div>
                     </TableCell>
                     <TableCell>
-                      {userPositions.length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {userPositions.map((position) => (
-                            <Badge 
-                              key={position.id}
-                              variant="secondary" 
-                              className="text-xs"
-                              style={{ 
-                                backgroundColor: `${position.color}20`,
-                                color: position.color,
-                              }}
-                            >
-                              {position.name}
-                              {position.jobLevel && (
-                                <span className="ml-1 opacity-70">({position.jobLevel})</span>
-                              )}
-                            </Badge>
-                          ))}
-                        </div>
+                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{emp.employeeCode}</code>
+                    </TableCell>
+                    <TableCell>
+                      {emp.department ? (
+                        <Badge variant="secondary" className="text-xs">
+                          <Building2 className="mr-1 h-3 w-3" />
+                          {emp.department}
+                        </Badge>
                       ) : (
                         <span className="text-muted-foreground text-sm">-</span>
                       )}
                     </TableCell>
                     <TableCell>
-                      {role ? (
-                        <div className="flex items-center gap-2">
-                          <div
-                            className="h-2 w-2 rounded-full"
-                            style={{ backgroundColor: role.color }}
-                          />
-                          <span>{role.name}</span>
-                        </div>
+                      {emp.roleName ? (
+                        <Badge variant="outline" className="text-xs">{emp.roleName}</Badge>
                       ) : (
-                        <Badge variant="secondary">{user.role}</Badge>
+                        <Badge variant="secondary" className="text-xs">{emp.role}</Badge>
                       )}
                     </TableCell>
                     <TableCell>
-                      <div className="flex items-center gap-2">
-                        <Badge variant={user.customPointRatio ? "default" : "outline"}>
-                          {pointRatio.pointedWorkPercent}/{pointRatio.nonPointedWorkPercent}
-                        </Badge>
-                        {user.customPointRatio && (
-                          <span className="text-xs text-muted-foreground">(Custom)</span>
-                        )}
-                      </div>
+                      {emp.positionName ? (
+                        <span className="text-sm">{emp.positionName}</span>
+                      ) : (
+                        <span className="text-muted-foreground text-sm">-</span>
+                      )}
                     </TableCell>
-                    <TableCell>{taskCount}</TableCell>
                     <TableCell>
-                      {format(new Date(user.createdAt), "MMM d, yyyy")}
+                      <Badge variant={emp.isActive ? "default" : "secondary"}>
+                        {emp.isActive ? "Active" : "Inactive"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {format(new Date(emp.createdAt), "MMM d, yyyy")}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
@@ -359,78 +327,72 @@ export default function UsersPage() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8"
-                          onClick={() => openPointRatioDialog(user)}
-                          title="Configure Point Ratio"
-                        >
-                          <Settings2 className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          onClick={() => openEditDialog(user)}
-                          title="Edit User"
+                          onClick={() => openEditDialog(emp)}
+                          title="Edit Employee"
                         >
                           <Pencil className="h-4 w-4" />
                         </Button>
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-destructive hover:text-destructive"
-                              title="Delete User"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>Delete User?</AlertDialogTitle>
-                              <AlertDialogDescription>
-                                This will remove {user.name} from the workspace. This action cannot be undone.
-                              </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>Cancel</AlertDialogCancel>
-                              <AlertDialogAction
-                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                onClick={() => deleteUser(user.id)}
-                              >
-                                Delete
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
+                        {emp.isActive && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-destructive hover:text-destructive"
+                            title="Deactivate Employee"
+                            onClick={() => setDeactivateEmployeeId(emp.id)}
+                          >
+                            <UserX className="h-4 w-4" />
+                          </Button>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+                ))}
+                {employees.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                      No employees yet.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
 
-      {/* Create/Edit User Dialog */}
-      <Dialog open={showDialog} onOpenChange={setShowDialog}>
+      {/* Create/Edit Employee Dialog */}
+      <Dialog open={showDialog} onOpenChange={(open) => { if (!open) { setShowDialog(false); resetForm(); } else { setShowDialog(true); } }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{editingUser ? "Edit User" : "Add User"}</DialogTitle>
+            <DialogTitle>{editingEmployee ? "Edit Employee" : "Add Employee"}</DialogTitle>
             <DialogDescription>
-              {editingUser
-                ? "Update user details and role assignment."
-                : "Add a new user to the workspace."}
+              {editingEmployee
+                ? "Update employee details and assignments."
+                : "Add a new employee to the system."}
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-4">
+            {!editingEmployee && (
+              <div className="space-y-2">
+                <Label htmlFor="emp-code">
+                  Employee Code <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  id="emp-code"
+                  value={employeeCode}
+                  onChange={(e) => setEmployeeCode(e.target.value)}
+                  placeholder="e.g., EMP001"
+                />
+              </div>
+            )}
+
             <div className="space-y-2">
-              <Label htmlFor="user-name">
+              <Label htmlFor="emp-name">
                 Name <span className="text-destructive">*</span>
               </Label>
               <Input
-                id="user-name"
+                id="emp-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Full name"
@@ -438,11 +400,9 @@ export default function UsersPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="user-email">
-                Email <span className="text-destructive">*</span>
-              </Label>
+              <Label htmlFor="emp-email">Email</Label>
               <Input
-                id="user-email"
+                id="emp-email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -450,55 +410,36 @@ export default function UsersPage() {
               />
             </div>
 
+            {!editingEmployee && (
+              <div className="space-y-2">
+                <Label htmlFor="emp-password">
+                  Password <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  id="emp-password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Set initial password"
+                />
+              </div>
+            )}
+
             <Separator />
 
             <div className="space-y-2">
-              <Label>Positions (can select multiple)</Label>
-              <div className="border rounded-md p-3 space-y-2 max-h-[200px] overflow-y-auto">
-                {positions.filter((pos) => pos.id).sort((a, b) => a.level - b.level).map((pos) => {
-                  const isSelected = selectedPositionIds.includes(pos.id);
-                  return (
-                    <div 
-                      key={pos.id}
-                      className={`flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
-                        isSelected ? "bg-primary/10" : "hover:bg-muted"
-                      }`}
-                      onClick={() => {
-                        if (isSelected) {
-                          setSelectedPositionIds(selectedPositionIds.filter(id => id !== pos.id));
-                        } else {
-                          setSelectedPositionIds([...selectedPositionIds, pos.id]);
-                        }
-                      }}
-                    >
-                      <Checkbox checked={isSelected} />
-                      <Building2 
-                        className="h-3.5 w-3.5 shrink-0"
-                        style={{ color: pos.color || "#6b7280" }}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <span className="text-sm">{pos.name}</span>
-                        {pos.jobLevel && (
-                          <span className="text-xs text-muted-foreground ml-1">
-                            ({pos.jobLevel})
-                          </span>
-                        )}
-                        {pos.department && (
-                          <p className="text-xs text-muted-foreground truncate">{pos.department}</p>
-                        )}
-                      </div>
-                      <Badge variant="outline" className="text-xs shrink-0">
-                        L{pos.level}
-                      </Badge>
-                    </div>
-                  );
-                })}
-              </div>
-              {selectedPositionIds.length > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  {selectedPositionIds.length} position(s) selected
-                </p>
-              )}
+              <Label>System Role</Label>
+              <Select value={role} onValueChange={(v) => setRole(v as typeof role)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="employee">Employee</SelectItem>
+                  <SelectItem value="manager">Manager</SelectItem>
+                  <SelectItem value="hr">HR</SelectItem>
+                  <SelectItem value="admin">Admin</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-2">
@@ -509,154 +450,90 @@ export default function UsersPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">No Role</SelectItem>
-                  {roles.filter((role) => role.id).map((role) => (
-                    <SelectItem key={role.id} value={role.id}>
+                  {roles.map((r) => (
+                    <SelectItem key={r.id} value={r.id}>
                       <div className="flex items-center gap-2">
-                        <div
-                          className="h-2 w-2 rounded-full"
-                          style={{ backgroundColor: role.color }}
-                        />
-                        {role.name}
-                        <span className="text-xs text-muted-foreground ml-2">
-                          ({role.pointRatio.pointedWorkPercent}/{role.pointRatio.nonPointedWorkPercent})
-                        </span>
+                        <div className="h-2 w-2 rounded-full" style={{ backgroundColor: r.color }} />
+                        {r.name}
                       </div>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
-                The role determines default permissions and point ratio.
-              </p>
             </div>
 
             <div className="space-y-2">
-              <Label>Access Level</Label>
-              <Select value={legacyRole} onValueChange={(v) => setLegacyRole(v as typeof legacyRole)}>
+              <Label>Position</Label>
+              <Select value={positionId || "none"} onValueChange={(v) => setPositionId(v === "none" ? "" : v)}>
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue placeholder="Select a position" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="admin">Admin</SelectItem>
-                  <SelectItem value="member">Member</SelectItem>
-                  <SelectItem value="viewer">Viewer</SelectItem>
+                  <SelectItem value="none">No Position</SelectItem>
+                  {positions.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                      {p.department && (
+                        <span className="text-xs text-muted-foreground ml-2">({p.department})</span>
+                      )}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
-          </div>
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDialog(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleSubmit} disabled={!name.trim() || !email.trim()}>
-              {editingUser ? "Save Changes" : "Add User"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            <div className="space-y-2">
+              <Label htmlFor="emp-dept">Department</Label>
+              <Input
+                id="emp-dept"
+                value={department}
+                onChange={(e) => setDepartment(e.target.value)}
+                placeholder="e.g., Engineering"
+              />
+            </div>
 
-      {/* Point Ratio Configuration Dialog */}
-      <Dialog open={showPointRatioDialog} onOpenChange={setShowPointRatioDialog}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Configure Point Ratio</DialogTitle>
-            <DialogDescription>
-              {selectedUserForRatio && (
-                <>Set a custom point ratio for {selectedUserForRatio.name} or use the role default.</>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-6 py-4">
-            {selectedUserForRatio && (
-              <>
-                {/* Current Role Info */}
-                {getRoleForUser(selectedUserForRatio) && (
-                  <div className="p-3 bg-muted/50 rounded-lg">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Shield className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm font-medium">
-                        Role: {getRoleForUser(selectedUserForRatio)?.name}
-                      </span>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Default ratio: {getRoleForUser(selectedUserForRatio)?.pointRatio.pointedWorkPercent}/
-                      {getRoleForUser(selectedUserForRatio)?.pointRatio.nonPointedWorkPercent}
-                    </p>
-                  </div>
-                )}
-
-                {/* Custom Ratio Toggle */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium">Use Custom Ratio</p>
-                    <p className="text-sm text-muted-foreground">
-                      Override the role&apos;s default point ratio
-                    </p>
-                  </div>
-                  <Switch
-                    checked={useCustomRatio}
-                    onCheckedChange={setUseCustomRatio}
-                  />
+            {editingEmployee && (
+              <div className="flex items-center justify-between rounded-lg border p-3">
+                <div>
+                  <p className="font-medium text-sm">Active Status</p>
+                  <p className="text-xs text-muted-foreground">Enable or disable this employee</p>
                 </div>
-
-                {useCustomRatio && (
-                  <>
-                    <Separator />
-
-                    <div className="space-y-4">
-                      <Label>Point Ratio Preset</Label>
-                      <Select value={pointRatioType} onValueChange={setPointRatioType}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="80/20">80/20 (Standard)</SelectItem>
-                          <SelectItem value="70/30">70/30</SelectItem>
-                          <SelectItem value="60/40">60/40 (Management)</SelectItem>
-                          <SelectItem value="90/10">90/10 (Technical)</SelectItem>
-                          <SelectItem value="100/0">100/0 (Full Points)</SelectItem>
-                          <SelectItem value="custom">Custom Ratio</SelectItem>
-                        </SelectContent>
-                      </Select>
-
-                      {pointRatioType === "custom" && (
-                        <div className="space-y-3 p-4 bg-muted/50 rounded-lg">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm">Pointed Work</span>
-                            <span className="text-sm font-medium">{customPointedPercent}%</span>
-                          </div>
-                          <Slider
-                            value={[customPointedPercent]}
-                            onValueChange={([value]) => setCustomPointedPercent(value)}
-                            min={0}
-                            max={100}
-                            step={5}
-                          />
-                          <div className="flex justify-between text-xs text-muted-foreground">
-                            <span>Non-Pointed: {100 - customPointedPercent}%</span>
-                            <span>Pointed: {customPointedPercent}%</span>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
-              </>
+                <Switch checked={isActive} onCheckedChange={setIsActive} />
+              </div>
             )}
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowPointRatioDialog(false)}>
+            <Button variant="outline" onClick={() => { setShowDialog(false); resetForm(); }}>
               Cancel
             </Button>
-            <Button onClick={handleSavePointRatio}>
-              Save Settings
+            <Button onClick={handleSubmit} disabled={!isCreateFormValid || isSaving}>
+              {isSaving ? "Saving..." : editingEmployee ? "Save Changes" : "Add Employee"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Deactivate Confirmation */}
+      <AlertDialog open={!!deactivateEmployeeId} onOpenChange={(open) => { if (!open) setDeactivateEmployeeId(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Deactivate Employee?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will deactivate {deactivatingEmployee?.name}. They will no longer be able to log in.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={handleDeactivate}
+            >
+              Deactivate
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

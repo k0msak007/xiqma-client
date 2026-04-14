@@ -1,11 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
 import {
   User,
   Bell,
   Palette,
   Globe,
+  Loader2,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -22,13 +26,56 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { useAuthStore } from "@/lib/auth-store";
+import { useEmployee } from "@/hooks/use-employee";
 import { users } from "@/lib/mock-data";
 import { useTranslation, useLanguageStore, type Language } from "@/lib/i18n";
+import { toast } from "sonner";
+
+const currentUser = users[0];
+
+const passwordSchema = z.object({
+  currentPassword: z.string().min(1, "กรุณากรอกรหัสผ่านปัจจุบัน"),
+  newPassword: z.string().min(8, "รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร"),
+  confirmPassword: z.string().min(1, "กรุณายืนยันรหัสผ่าน"),
+}).refine((data) => data.newPassword === data.confirmPassword, {
+  message: "รหัสผ่านไม่ตรงกัน",
+  path: ["confirmPassword"],
+});
+
+type PasswordFormData = z.infer<typeof passwordSchema>;
 
 export default function ProfilePage() {
   const { t } = useTranslation();
   const { language, setLanguage } = useLanguageStore();
-  const currentUser = users[0]; // Alex Johnson (admin)
+  const { user } = useAuthStore();
+  
+  const { uploadAvatar, changePassword: apiChangePassword, isLoading: isApiLoading } = useEmployee({
+    employeeId: user?.id || "",
+  });
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  
+  const {
+    register: registerPassword,
+    handleSubmit: handlePasswordSubmit,
+    reset: resetPasswordForm,
+    formState: { errors: passwordErrors, isSubmitting: isChangingPassword },
+  } = useForm<PasswordFormData>({
+    resolver: zodResolver(passwordSchema),
+  });
+  
   const [notifications, setNotifications] = useState({
     email: true,
     desktop: true,
@@ -78,17 +125,57 @@ export default function ProfilePage() {
                 {/* Avatar */}
                 <div className="flex items-center gap-4">
                   <Avatar className="h-20 w-20">
-                    <AvatarImage src={currentUser.avatar} />
+                    <AvatarImage src={avatarPreview || user?.avatarUrl || currentUser?.avatar} />
                     <AvatarFallback className="text-2xl">
-                      {currentUser.name.charAt(0)}
+                      {user?.name?.charAt(0) || currentUser?.name?.charAt(0)}
                     </AvatarFallback>
                   </Avatar>
                   <div>
-                    <Button variant="outline" size="sm">
-                      {t("profile.changePhoto")}
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      className="hidden"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        
+                        if (file.size > 5 * 1024 * 1024) {
+                          toast.error("ไฟล์ใหญ่เกินไป สูงสุด 5MB");
+                          return;
+                        }
+                        
+                        setIsUploading(true);
+                        try {
+                          const objectUrl = URL.createObjectURL(file);
+                          setAvatarPreview(objectUrl);
+                          await uploadAvatar(file);
+                          toast.success("อัปโหลดรูปโปรไฟล์สำเร็จ");
+                        } catch (err) {
+                          setAvatarPreview(null);
+                          toast.error("อัปโหลดไม่สำเร็จ");
+                        } finally {
+                          setIsUploading(false);
+                        }
+                      }}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isUploading}
+                    >
+                      {isUploading ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          {t("common.uploading")}
+                        </>
+                      ) : (
+                        t("profile.changePhoto")
+                      )}
                     </Button>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      JPG, PNG or GIF. Max 2MB.
+                      JPG, PNG or WebP. Max 5MB.
                     </p>
                   </div>
                 </div>
@@ -175,7 +262,9 @@ export default function ProfilePage() {
                       Last changed 30 days ago
                     </p>
                   </div>
-                  <Button variant="outline">{t("profile.changePassword")}</Button>
+                  <Button variant="outline" onClick={() => setShowPasswordModal(true)}>
+                    {t("profile.changePassword")}
+                  </Button>
                 </div>
                 <Separator />
                 <div className="flex items-center justify-between">
@@ -388,6 +477,87 @@ export default function ProfilePage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Password Change Dialog */}
+      <Dialog open={showPasswordModal} onOpenChange={setShowPasswordModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("profile.changePassword")}</DialogTitle>
+            <DialogDescription>
+              กรุณากรอกรหัสผ่านใหม่ รหัสผ่านจะถูกเปลี่ยนและคุณจะถูก logout จากอุปกรณ์อื่นทั้งหมด
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={handlePasswordSubmit(async (data) => {
+              try {
+                await apiChangePassword({
+                  currentPassword: data.currentPassword,
+                  newPassword: data.newPassword,
+                });
+                toast.success("เปลี่ยนรหัสผ่านสำเร็จ");
+                setShowPasswordModal(false);
+                resetPasswordForm();
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : "เปลี่ยนรหัสผ่านไม่สำเร็จ");
+              }
+            })}
+            className="space-y-4"
+          >
+            <div className="space-y-2">
+              <Label htmlFor="currentPassword">{t("profile.currentPassword")}</Label>
+              <Input
+                id="currentPassword"
+                type="password"
+                {...registerPassword("currentPassword")}
+              />
+              {passwordErrors.currentPassword && (
+                <p className="text-sm text-red-500">
+                  {passwordErrors.currentPassword.message}
+                </p>
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="newPassword">{t("profile.newPassword")}</Label>
+              <Input
+                id="newPassword"
+                type="password"
+                {...registerPassword("newPassword")}
+              />
+              {passwordErrors.newPassword && (
+                <p className="text-sm text-red-500">
+                  {passwordErrors.newPassword.message}
+                </p>
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="confirmPassword">{t("profile.confirmPassword")}</Label>
+              <Input
+                id="confirmPassword"
+                type="password"
+                {...registerPassword("confirmPassword")}
+              />
+              {passwordErrors.confirmPassword && (
+                <p className="text-sm text-red-500">
+                  {passwordErrors.confirmPassword.message}
+                </p>
+              )}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowPasswordModal(false)}
+              >
+                {t("common.cancel")}
+              </Button>
+              <Button type="submit" disabled={isChangingPassword}>
+                {isChangingPassword && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {t("profile.changePassword")}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

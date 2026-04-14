@@ -1,16 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
-import {
-  ArrowLeft,
-  Plus,
-  Pencil,
-  Trash2,
-  Shield,
-  Users,
-  Target,
-} from "lucide-react";
+import { ArrowLeft, Plus, Pencil, Trash2, Shield } from "lucide-react";
+import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,7 +12,6 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Slider } from "@/components/ui/slider";
 import {
   Dialog,
   DialogContent,
@@ -37,20 +29,10 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { useTaskStore } from "@/lib/store";
-import type { Role, RolePermission, PointRatio, PointTarget, PointTargetPeriod } from "@/lib/types";
-import { defaultPointRatios, calculatePointSplit } from "@/lib/types";
+import { rolesApi, type Role, type CreateRolePayload } from "@/lib/api/roles";
 
-const allPermissions: { value: RolePermission; label: string; description: string }[] = [
+const allPermissions: { value: string; label: string; description: string }[] = [
   { value: "view_tasks", label: "View Tasks", description: "Can view tasks and task details" },
   { value: "create_tasks", label: "Create Tasks", description: "Can create new tasks" },
   { value: "edit_tasks", label: "Edit Tasks", description: "Can edit existing tasks" },
@@ -64,38 +46,46 @@ const allPermissions: { value: RolePermission; label: string; description: strin
 ];
 
 const colorOptions = [
-  "#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", 
-  "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1"
+  "#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6",
+  "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1",
 ];
 
 export default function RolesPage() {
-  const { roles, users, addRole, updateRole, deleteRole } = useTaskStore();
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [showDialog, setShowDialog] = useState(false);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [deleteRoleId, setDeleteRoleId] = useState<string | null>(null);
 
   // Form state
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [color, setColor] = useState("#3b82f6");
-  const [permissions, setPermissions] = useState<RolePermission[]>([]);
-  const [pointRatioType, setPointRatioType] = useState<string>("80/20");
-  const [customPointedPercent, setCustomPointedPercent] = useState(80);
-  
-  // Point Target state
-  const [hasPointTarget, setHasPointTarget] = useState(false);
-  const [targetPoints, setTargetPoints] = useState(40);
-  const [targetPeriod, setTargetPeriod] = useState<PointTargetPeriod>("week");
+  const [permissions, setPermissions] = useState<string[]>([]);
+
+  const loadRoles = async () => {
+    try {
+      setIsLoading(true);
+      const data = await rolesApi.list();
+      setRoles(data);
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to load roles");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadRoles();
+  }, []);
 
   const resetForm = () => {
     setName("");
     setDescription("");
     setColor("#3b82f6");
     setPermissions([]);
-    setPointRatioType("80/20");
-    setCustomPointedPercent(80);
-    setHasPointTarget(false);
-    setTargetPoints(40);
-    setTargetPeriod("week");
     setEditingRole(null);
   };
 
@@ -110,75 +100,53 @@ export default function RolesPage() {
     setDescription(role.description || "");
     setColor(role.color);
     setPermissions(role.permissions);
-    
-    // Determine point ratio type
-    const ratioKey = Object.entries(defaultPointRatios).find(
-      ([, ratio]) => ratio.pointedWorkPercent === role.pointRatio.pointedWorkPercent
-    )?.[0];
-    
-    if (ratioKey) {
-      setPointRatioType(ratioKey);
-    } else {
-      setPointRatioType("custom");
-      setCustomPointedPercent(role.pointRatio.pointedWorkPercent);
-    }
-    
-    // Point target
-    if (role.pointTarget) {
-      setHasPointTarget(true);
-      setTargetPoints(role.pointTarget.totalPoints);
-      setTargetPeriod(role.pointTarget.period);
-    } else {
-      setHasPointTarget(false);
-      setTargetPoints(40);
-      setTargetPeriod("week");
-    }
-    
     setShowDialog(true);
   };
 
-  const getPointRatio = (): PointRatio => {
-    if (pointRatioType === "custom") {
-      return {
-        pointedWorkPercent: customPointedPercent,
-        nonPointedWorkPercent: 100 - customPointedPercent,
-      };
-    }
-    return defaultPointRatios[pointRatioType] || defaultPointRatios["80/20"];
-  };
-
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!name.trim()) return;
+    setIsSaving(true);
 
-    const pointTarget: PointTarget | undefined = hasPointTarget
-      ? { totalPoints: targetPoints, period: targetPeriod }
-      : undefined;
-
-    const roleData = {
+    const payload: CreateRolePayload = {
       name: name.trim(),
       description: description.trim() || undefined,
       color,
       permissions,
-      pointRatio: getPointRatio(),
-      pointTarget,
     };
 
-    if (editingRole) {
-      updateRole(editingRole.id, roleData);
-    } else {
-      const newRole: Role = {
-        id: `role-${Date.now()}`,
-        ...roleData,
-        createdAt: new Date(),
-      };
-      addRole(newRole);
+    try {
+      if (editingRole) {
+        await rolesApi.update(editingRole.id, payload);
+        toast.success("Role updated successfully");
+      } else {
+        await rolesApi.create(payload);
+        toast.success("Role created successfully");
+      }
+      setShowDialog(false);
+      resetForm();
+      await loadRoles();
+    } catch (err) {
+      console.error(err);
+      toast.error(editingRole ? "Failed to update role" : "Failed to create role");
+    } finally {
+      setIsSaving(false);
     }
-
-    setShowDialog(false);
-    resetForm();
   };
 
-  const togglePermission = (permission: RolePermission) => {
+  const handleDelete = async () => {
+    if (!deleteRoleId) return;
+    try {
+      await rolesApi.delete(deleteRoleId);
+      toast.success("Role deleted");
+      setDeleteRoleId(null);
+      await loadRoles();
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to delete role");
+    }
+  };
+
+  const togglePermission = (permission: string) => {
     if (permissions.includes(permission)) {
       setPermissions(permissions.filter((p) => p !== permission));
     } else {
@@ -186,9 +154,11 @@ export default function RolesPage() {
     }
   };
 
-  const getUsersWithRole = (roleId: string) => {
-    return users.filter((u) => u.roleId === roleId);
+  const getPermissionLabel = (value: string) => {
+    return allPermissions.find((p) => p.value === value)?.label ?? value;
   };
+
+  const deletingRole = roles.find((r) => r.id === deleteRoleId);
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -202,7 +172,7 @@ export default function RolesPage() {
         <div className="flex-1">
           <h1 className="text-2xl font-bold tracking-tight">Role Management</h1>
           <p className="text-muted-foreground">
-            Create and manage roles with permissions and point ratios.
+            Create and manage roles with permissions.
           </p>
         </div>
         <Button onClick={openCreateDialog}>
@@ -211,12 +181,17 @@ export default function RolesPage() {
         </Button>
       </div>
 
+      {/* Loading state */}
+      {isLoading && (
+        <div className="flex items-center justify-center py-12">
+          <p className="text-muted-foreground">Loading roles...</p>
+        </div>
+      )}
+
       {/* Roles Grid */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {roles.map((role) => {
-          const roleUsers = getUsersWithRole(role.id);
-          
-          return (
+      {!isLoading && (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {roles.map((role) => (
             <Card key={role.id}>
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between">
@@ -245,113 +220,65 @@ export default function RolesPage() {
                     >
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive hover:text-destructive"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Delete Role?</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            This will delete the role &quot;{role.name}&quot;. Users with this role will need to be reassigned.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                            onClick={() => deleteRole(role.id)}
-                          >
-                            Delete
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-destructive hover:text-destructive"
+                      onClick={() => setDeleteRoleId(role.id)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
                   </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
-                {/* Point Target */}
-                {role.pointTarget && (
-                  <div className="p-3 bg-muted/50 rounded-lg space-y-2">
-                    <div className="flex items-center justify-between text-sm">
-                      <div className="flex items-center gap-1.5">
-                        <Target className="h-3.5 w-3.5 text-primary" />
-                        <span className="font-medium">Point Target</span>
-                      </div>
-                      <Badge variant="default">
-                        {role.pointTarget.totalPoints} pts/{role.pointTarget.period}
-                      </Badge>
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {(() => {
-                        const split = calculatePointSplit(role.pointTarget.totalPoints, role.pointRatio);
-                        return `Pointed: ${split.pointedPoints} | Non-Pointed: ${split.nonPointedPoints}`;
-                      })()}
-                    </div>
-                  </div>
-                )}
-
-                {/* Point Ratio */}
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Point Ratio</span>
-                  <Badge variant="secondary">
-                    {role.pointRatio.pointedWorkPercent}/{role.pointRatio.nonPointedWorkPercent}
-                  </Badge>
-                </div>
-
-                {/* Users Count */}
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Users</span>
-                  <div className="flex items-center gap-1.5">
-                    <Users className="h-3.5 w-3.5 text-muted-foreground" />
-                    <span>{roleUsers.length}</span>
-                  </div>
-                </div>
-
                 <Separator />
-
                 {/* Permissions Preview */}
                 <div>
                   <p className="text-xs text-muted-foreground mb-2">Permissions</p>
                   <div className="flex flex-wrap gap-1">
                     {role.permissions.includes("admin") ? (
                       <Badge variant="default" className="text-xs">Full Admin</Badge>
+                    ) : role.permissions.length === 0 ? (
+                      <span className="text-xs text-muted-foreground">No permissions</span>
                     ) : (
-                      role.permissions.slice(0, 3).map((perm) => (
-                        <Badge key={perm} variant="outline" className="text-xs">
-                          {allPermissions.find((p) => p.value === perm)?.label}
-                        </Badge>
-                      ))
-                    )}
-                    {!role.permissions.includes("admin") && role.permissions.length > 3 && (
-                      <Badge variant="outline" className="text-xs">
-                        +{role.permissions.length - 3} more
-                      </Badge>
+                      <>
+                        {role.permissions.slice(0, 3).map((perm) => (
+                          <Badge key={perm} variant="outline" className="text-xs">
+                            {getPermissionLabel(perm)}
+                          </Badge>
+                        ))}
+                        {role.permissions.length > 3 && (
+                          <Badge variant="outline" className="text-xs">
+                            +{role.permissions.length - 3} more
+                          </Badge>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
               </CardContent>
             </Card>
-          );
-        })}
-      </div>
+          ))}
+
+          {roles.length === 0 && (
+            <div className="col-span-full py-12 text-center">
+              <Shield className="mx-auto h-12 w-12 text-muted-foreground/50 mb-4" />
+              <p className="text-muted-foreground">No roles yet. Create your first role.</p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Create/Edit Role Dialog */}
-      <Dialog open={showDialog} onOpenChange={setShowDialog}>
+      <Dialog open={showDialog} onOpenChange={(open) => { if (!open) { setShowDialog(false); resetForm(); } else { setShowDialog(true); } }}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingRole ? "Edit Role" : "Create Role"}</DialogTitle>
             <DialogDescription>
               {editingRole
-                ? "Update the role details, permissions, and point ratio."
-                : "Create a new role with specific permissions and point calculation settings."}
+                ? "Update the role details and permissions."
+                : "Create a new role with specific permissions."}
             </DialogDescription>
           </DialogHeader>
 
@@ -371,7 +298,7 @@ export default function RolesPage() {
               </div>
               <div className="space-y-2">
                 <Label>Color</Label>
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap">
                   {colorOptions.map((c) => (
                     <button
                       key={c}
@@ -396,120 +323,6 @@ export default function RolesPage() {
                 placeholder="Brief description of this role..."
                 rows={2}
               />
-            </div>
-
-            <Separator />
-
-            {/* Point Ratio */}
-            <div className="space-y-4">
-              <div>
-                <Label className="text-base">Point Ratio</Label>
-                <p className="text-sm text-muted-foreground">
-                  Define how points are calculated for this role. The first number is the percentage of work that earns points.
-                </p>
-              </div>
-
-              <Select value={pointRatioType} onValueChange={setPointRatioType}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="80/20">80/20 (Standard)</SelectItem>
-                  <SelectItem value="70/30">70/30</SelectItem>
-                  <SelectItem value="60/40">60/40 (Management)</SelectItem>
-                  <SelectItem value="90/10">90/10 (Technical)</SelectItem>
-                  <SelectItem value="100/0">100/0 (Full Points)</SelectItem>
-                  <SelectItem value="custom">Custom Ratio</SelectItem>
-                </SelectContent>
-              </Select>
-
-              {pointRatioType === "custom" && (
-                <div className="space-y-3 p-4 bg-muted/50 rounded-lg">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm">Pointed Work</span>
-                    <span className="text-sm font-medium">{customPointedPercent}%</span>
-                  </div>
-                  <Slider
-                    value={[customPointedPercent]}
-                    onValueChange={([value]) => setCustomPointedPercent(value)}
-                    min={0}
-                    max={100}
-                    step={5}
-                  />
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>Non-Pointed: {100 - customPointedPercent}%</span>
-                    <span>Pointed: {customPointedPercent}%</span>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <Separator />
-
-            {/* Point Target */}
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <Label className="text-base">Point Target</Label>
-                  <p className="text-sm text-muted-foreground">
-                    Set a target for how many points this role should assign per time period.
-                  </p>
-                </div>
-                <Checkbox
-                  checked={hasPointTarget}
-                  onCheckedChange={(checked) => setHasPointTarget(checked === true)}
-                />
-              </div>
-
-              {hasPointTarget && (
-                <div className="space-y-4 p-4 bg-muted/50 rounded-lg">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label>Total Points</Label>
-                      <Input
-                        type="number"
-                        value={targetPoints}
-                        onChange={(e) => setTargetPoints(parseInt(e.target.value) || 0)}
-                        min={1}
-                        max={999}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Period</Label>
-                      <Select value={targetPeriod} onValueChange={(v) => setTargetPeriod(v as PointTargetPeriod)}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="day">Per Day</SelectItem>
-                          <SelectItem value="week">Per Week</SelectItem>
-                          <SelectItem value="month">Per Month</SelectItem>
-                          <SelectItem value="year">Per Year</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-
-                  {/* Calculated Split Preview */}
-                  <div className="pt-3 border-t">
-                    <p className="text-sm font-medium mb-2">Calculated Split (based on ratio {getPointRatio().pointedWorkPercent}/{getPointRatio().nonPointedWorkPercent})</p>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="p-3 bg-background rounded-lg border">
-                        <p className="text-xs text-muted-foreground">Pointed Work</p>
-                        <p className="text-lg font-bold text-primary">
-                          {calculatePointSplit(targetPoints, getPointRatio()).pointedPoints} pts
-                        </p>
-                      </div>
-                      <div className="p-3 bg-background rounded-lg border">
-                        <p className="text-xs text-muted-foreground">Non-Pointed Work</p>
-                        <p className="text-lg font-bold text-muted-foreground">
-                          {calculatePointSplit(targetPoints, getPointRatio()).nonPointedPoints} pts
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
 
             <Separator />
@@ -549,15 +362,36 @@ export default function RolesPage() {
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDialog(false)}>
+            <Button variant="outline" onClick={() => { setShowDialog(false); resetForm(); }}>
               Cancel
             </Button>
-            <Button onClick={handleSubmit} disabled={!name.trim()}>
-              {editingRole ? "Save Changes" : "Create Role"}
+            <Button onClick={handleSubmit} disabled={!name.trim() || isSaving}>
+              {isSaving ? "Saving..." : editingRole ? "Save Changes" : "Create Role"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Confirmation */}
+      <AlertDialog open={!!deleteRoleId} onOpenChange={(open) => { if (!open) setDeleteRoleId(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Role?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will delete the role &quot;{deletingRole?.name}&quot;. Users with this role will need to be reassigned.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={handleDelete}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

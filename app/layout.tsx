@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
-import { SidebarProvider } from "@/components/ui/sidebar";
-import { AppSidebar } from "@/components/app-sidebar";
 import { Toaster } from "@/components/ui/sonner";
+import { AuthShell } from "@/components/auth-shell";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
@@ -39,12 +38,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className={`${inter.variable} font-sans antialiased`}>
-        <SidebarProvider>
-          <div className="flex h-screen w-full">
-            <AppSidebar />
-            <main className="flex-1 overflow-auto">{children}</main>
-          </div>
-        </SidebarProvider>
+        <AuthShell>{children}</AuthShell>
         <Toaster />
         <Analytics />
       </body>

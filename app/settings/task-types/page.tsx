@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -11,6 +11,7 @@ import {
   Check,
   X,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -44,9 +45,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useTaskStore } from "@/lib/store";
-import { useTranslation } from "@/lib/i18n";
-import type { TaskType, TaskTypeCategory } from "@/lib/types";
 import {
   Select,
   SelectContent,
@@ -55,39 +53,52 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { taskTypesApi, type TaskType, type CreateTaskTypePayload } from "@/lib/api/task-types";
 
 const defaultColors = [
   "#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#6b7280", "#14b8a6",
 ];
 
+type FilterCategory = "all" | "private" | "organization";
+
 export default function TaskTypesPage() {
-  const { t } = useTranslation();
-  const { taskTypes, tasks, addTaskType, updateTaskType, deleteTaskType } = useTaskStore();
+  const [taskTypes, setTaskTypes] = useState<TaskType[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [editingTaskType, setEditingTaskType] = useState<TaskType | null>(null);
   const [deleteTaskTypeId, setDeleteTaskTypeId] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [filterCategory, setFilterCategory] = useState<FilterCategory>("all");
 
   // Form state
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [color, setColor] = useState(defaultColors[0]);
-  const [category, setCategory] = useState<TaskTypeCategory>("organization");
+  const [category, setCategory] = useState<"private" | "organization">("organization");
   const [countsForPoints, setCountsForPoints] = useState(true);
-  const [fixedPoints, setFixedPoints] = useState<number>(0);
-  
-  // Filter state
-  const [filterCategory, setFilterCategory] = useState<"all" | TaskTypeCategory>("all");
+  const [fixedPoints, setFixedPoints] = useState(0);
 
-  // Count tasks per task type
-  const taskTypeCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    tasks.forEach((task) => {
-      if (task.taskTypeId) {
-        counts[task.taskTypeId] = (counts[task.taskTypeId] || 0) + 1;
-      }
-    });
-    return counts;
-  }, [tasks]);
+  const loadTaskTypes = async () => {
+    try {
+      setIsLoading(true);
+      const data = await taskTypesApi.list();
+      setTaskTypes(data);
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to load task types");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadTaskTypes();
+  }, []);
+
+  const filteredTaskTypes = useMemo(() => {
+    if (filterCategory === "all") return taskTypes;
+    return taskTypes.filter((tt) => tt.category === filterCategory);
+  }, [taskTypes, filterCategory]);
 
   const resetForm = () => {
     setName("");
@@ -97,12 +108,6 @@ export default function TaskTypesPage() {
     setCountsForPoints(true);
     setFixedPoints(0);
   };
-  
-  // Filtered task types
-  const filteredTaskTypes = useMemo(() => {
-    if (filterCategory === "all") return taskTypes;
-    return taskTypes.filter((tt) => tt.category === filterCategory);
-  }, [taskTypes, filterCategory]);
 
   const handleOpenCreate = () => {
     resetForm();
@@ -119,41 +124,56 @@ export default function TaskTypesPage() {
     setEditingTaskType(taskType);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!name.trim()) return;
+    setIsSaving(true);
 
-    if (editingTaskType) {
-      updateTaskType(editingTaskType.id, {
-        name: name.trim(),
-        description: description.trim() || undefined,
-        color,
-        category,
-        countsForPoints,
-        fixedPoints: category === "private" ? fixedPoints : undefined,
-      });
-      setEditingTaskType(null);
-    } else {
-      const newTaskType: TaskType = {
-        id: `tasktype-${Date.now()}`,
-        name: name.trim(),
-        description: description.trim() || undefined,
-        color,
-        category,
-        countsForPoints,
-        fixedPoints: category === "private" ? fixedPoints : undefined,
-        createdAt: new Date(),
-      };
-      addTaskType(newTaskType);
-      setShowCreateDialog(false);
+    const payload: CreateTaskTypePayload = {
+      name: name.trim(),
+      description: description.trim() || undefined,
+      color,
+      category,
+      countsForPoints,
+      fixedPoints: category === "private" ? fixedPoints : undefined,
+    };
+
+    try {
+      if (editingTaskType) {
+        await taskTypesApi.update(editingTaskType.id, payload);
+        toast.success("Task type updated");
+        setEditingTaskType(null);
+      } else {
+        await taskTypesApi.create(payload);
+        toast.success("Task type created");
+        setShowCreateDialog(false);
+      }
+      resetForm();
+      await loadTaskTypes();
+    } catch (err) {
+      console.error(err);
+      toast.error(editingTaskType ? "Failed to update task type" : "Failed to create task type");
+    } finally {
+      setIsSaving(false);
     }
-    resetForm();
   };
 
-  const handleDelete = () => {
-    if (deleteTaskTypeId) {
-      deleteTaskType(deleteTaskTypeId);
+  const handleDelete = async () => {
+    if (!deleteTaskTypeId) return;
+    try {
+      await taskTypesApi.delete(deleteTaskTypeId);
+      toast.success("Task type deleted");
       setDeleteTaskTypeId(null);
+      await loadTaskTypes();
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to delete task type");
     }
+  };
+
+  const closeDialog = () => {
+    setShowCreateDialog(false);
+    setEditingTaskType(null);
+    resetForm();
   };
 
   return (
@@ -166,14 +186,14 @@ export default function TaskTypesPage() {
           </Button>
         </Link>
         <div className="flex-1">
-          <h1 className="text-2xl font-bold tracking-tight">{t("settings.taskTypeMaster")}</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Task Type Master</h1>
           <p className="text-muted-foreground">
             Define task types and whether they count for points
           </p>
         </div>
         <Button onClick={handleOpenCreate}>
           <Plus className="mr-2 h-4 w-4" />
-          {t("common.add")} Task Type
+          Add Task Type
         </Button>
       </div>
 
@@ -181,9 +201,7 @@ export default function TaskTypesPage() {
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Total Task Types
-            </CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Total Task Types</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{taskTypes.length}</div>
@@ -191,9 +209,7 @@ export default function TaskTypesPage() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Organization
-            </CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Organization</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-blue-600">
@@ -203,9 +219,7 @@ export default function TaskTypesPage() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Private
-            </CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Private</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-purple-600">
@@ -215,9 +229,7 @@ export default function TaskTypesPage() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              {t("settings.countsForPoints")}
-            </CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Counts for Points</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-green-600">
@@ -237,7 +249,7 @@ export default function TaskTypesPage() {
                 Organization tasks use role-based point ratio. Private tasks have fixed point values.
               </CardDescription>
             </div>
-            <Tabs value={filterCategory} onValueChange={(v) => setFilterCategory(v as "all" | TaskTypeCategory)}>
+            <Tabs value={filterCategory} onValueChange={(v) => setFilterCategory(v as FilterCategory)}>
               <TabsList>
                 <TabsTrigger value="all">All</TabsTrigger>
                 <TabsTrigger value="organization">Organization</TabsTrigger>
@@ -247,117 +259,112 @@ export default function TaskTypesPage() {
           </div>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Task Type</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead>Description</TableHead>
-                <TableHead className="text-center">Points</TableHead>
-                <TableHead className="text-center">{t("task.tasks")}</TableHead>
-                <TableHead className="text-right">{t("common.actions")}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredTaskTypes.map((taskType) => (
-                <TableRow key={taskType.id}>
-                  <TableCell>
-                    <div className="flex items-center gap-3">
-                      <div
-                        className="flex h-8 w-8 items-center justify-center rounded"
-                        style={{ backgroundColor: `${taskType.color}20` }}
-                      >
-                        <Layers className="h-4 w-4" style={{ color: taskType.color }} />
+          {isLoading ? (
+            <div className="py-12 text-center text-muted-foreground">Loading...</div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Task Type</TableHead>
+                  <TableHead>Category</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead className="text-center">Points</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredTaskTypes.map((taskType) => (
+                  <TableRow key={taskType.id}>
+                    <TableCell>
+                      <div className="flex items-center gap-3">
+                        <div
+                          className="flex h-8 w-8 items-center justify-center rounded"
+                          style={{ backgroundColor: `${taskType.color}20` }}
+                        >
+                          <Layers className="h-4 w-4" style={{ color: taskType.color }} />
+                        </div>
+                        <span className="font-medium">{taskType.name}</span>
                       </div>
-                      <span className="font-medium">{taskType.name}</span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge 
-                      variant={taskType.category === "organization" ? "default" : "secondary"}
-                      className={taskType.category === "organization" 
-                        ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" 
-                        : "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
-                      }
-                    >
-                      {taskType.category === "organization" ? "Organization" : "Private"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {taskType.description || "-"}
-                  </TableCell>
-                  <TableCell className="text-center">
-                    {taskType.category === "private" ? (
-                      taskType.countsForPoints ? (
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={taskType.category === "organization" ? "default" : "secondary"}
+                        className={
+                          taskType.category === "organization"
+                            ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                            : "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+                        }
+                      >
+                        {taskType.category === "organization" ? "Organization" : "Private"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {taskType.description || "-"}
+                    </TableCell>
+                    <TableCell className="text-center">
+                      {taskType.category === "private" ? (
+                        taskType.countsForPoints ? (
+                          <Badge className="bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                            {taskType.fixedPoints || 0} pts
+                          </Badge>
+                        ) : (
+                          <Badge variant="secondary">0 pts</Badge>
+                        )
+                      ) : taskType.countsForPoints ? (
                         <Badge className="bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                          {taskType.fixedPoints || 0} pts
+                          <Check className="mr-1 h-3 w-3" />
+                          Ratio
                         </Badge>
                       ) : (
-                        <Badge variant="secondary">0 pts</Badge>
-                      )
-                    ) : taskType.countsForPoints ? (
-                      <Badge className="bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                        <Check className="mr-1 h-3 w-3" />
-                        Ratio
-                      </Badge>
-                    ) : (
-                      <Badge variant="secondary">
-                        <X className="mr-1 h-3 w-3" />
-                        No
-                      </Badge>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-center">
-                    {taskTypeCounts[taskType.id] || 0}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleOpenEdit(taskType)}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => setDeleteTaskTypeId(taskType.id)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {filteredTaskTypes.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                    No task types defined yet
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
+                        <Badge variant="secondary">
+                          <X className="mr-1 h-3 w-3" />
+                          No
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleOpenEdit(taskType)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => setDeleteTaskTypeId(taskType.id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {filteredTaskTypes.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                      No task types defined yet
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
 
       {/* Create/Edit Dialog */}
       <Dialog
         open={showCreateDialog || !!editingTaskType}
-        onOpenChange={(open) => {
-          if (!open) {
-            setShowCreateDialog(false);
-            setEditingTaskType(null);
-            resetForm();
-          }
-        }}
+        onOpenChange={(open) => { if (!open) closeDialog(); }}
       >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {editingTaskType ? `${t("common.edit")} Task Type` : `${t("common.add")} Task Type`}
+              {editingTaskType ? "Edit Task Type" : "Add Task Type"}
             </DialogTitle>
             <DialogDescription>
               {editingTaskType
@@ -368,9 +375,9 @@ export default function TaskTypesPage() {
 
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="name">Name *</Label>
+              <Label htmlFor="tt-name">Name *</Label>
               <Input
-                id="name"
+                id="tt-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g., Development, Design, Bug Fix"
@@ -378,9 +385,9 @@ export default function TaskTypesPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="description">Description</Label>
+              <Label htmlFor="tt-description">Description</Label>
               <Textarea
-                id="description"
+                id="tt-description"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="Optional description"
@@ -390,7 +397,7 @@ export default function TaskTypesPage() {
 
             <div className="space-y-2">
               <Label>Category *</Label>
-              <Select value={category} onValueChange={(v) => setCategory(v as TaskTypeCategory)}>
+              <Select value={category} onValueChange={(v) => setCategory(v as "private" | "organization")}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -410,7 +417,7 @@ export default function TaskTypesPage() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                {category === "organization" 
+                {category === "organization"
                   ? "Organization tasks use role-based point ratio calculation."
                   : "Private tasks award a fixed number of points."}
               </p>
@@ -435,9 +442,9 @@ export default function TaskTypesPage() {
 
             {category === "private" && (
               <div className="space-y-2">
-                <Label htmlFor="fixedPoints">Fixed Points</Label>
+                <Label htmlFor="tt-fixedPoints">Fixed Points</Label>
                 <Input
-                  id="fixedPoints"
+                  id="tt-fixedPoints"
                   type="number"
                   min="0"
                   max="100"
@@ -453,9 +460,9 @@ export default function TaskTypesPage() {
 
             <div className="flex items-center justify-between rounded-lg border p-4">
               <div>
-                <p className="font-medium">{t("settings.countsForPoints")}</p>
+                <p className="font-medium">Counts for Points</p>
                 <p className="text-sm text-muted-foreground">
-                  {category === "private" 
+                  {category === "private"
                     ? `Enable to award ${fixedPoints} point(s) per task`
                     : "Tasks of this type will contribute to point calculations"}
                 </p>
@@ -468,25 +475,18 @@ export default function TaskTypesPage() {
           </div>
 
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setShowCreateDialog(false);
-                setEditingTaskType(null);
-                resetForm();
-              }}
-            >
-              {t("common.cancel")}
+            <Button variant="outline" onClick={closeDialog}>
+              Cancel
             </Button>
-            <Button onClick={handleSave} disabled={!name.trim()}>
-              {editingTaskType ? t("common.save") : t("common.create")}
+            <Button onClick={handleSave} disabled={!name.trim() || isSaving}>
+              {isSaving ? "Saving..." : editingTaskType ? "Save" : "Create"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Delete Confirmation */}
-      <AlertDialog open={!!deleteTaskTypeId} onOpenChange={() => setDeleteTaskTypeId(null)}>
+      <AlertDialog open={!!deleteTaskTypeId} onOpenChange={(open) => { if (!open) setDeleteTaskTypeId(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Task Type?</AlertDialogTitle>
@@ -495,9 +495,9 @@ export default function TaskTypesPage() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">
-              {t("common.delete")}
+              Delete
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
