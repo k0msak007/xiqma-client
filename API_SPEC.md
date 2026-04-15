@@ -1561,4 +1561,311 @@ X-RateLimit-Reset: 1712636400
 
 ---
 
+---
+
+# Workspace Hierarchy
+
+## GET /spaces ✅
+
+ดึง space ทั้งหมดที่ user เข้าถึงได้ — admin เห็นทั้งหมด, คนอื่นเห็นเฉพาะที่ตัวเองเป็น member
+
+**Auth required:** ✅ Bearer token
+
+### Response 200
+```json
+{
+  "success": true,
+  "message": "ดึงข้อมูล space สำเร็จ",
+  "data": [
+    {
+      "id": "uuid",
+      "name": "Engineering",
+      "color": "#3b82f6",
+      "icon": null,
+      "displayOrder": 1,
+      "memberCount": 5,
+      "listCount": 3,
+      "createdAt": "2026-04-14T00:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## GET /spaces/:id ✅
+
+ดูรายละเอียด space เดียว รวม member list
+
+**Auth required:** ✅ Bearer token | member ของ space หรือ admin
+
+### Response 200
+```json
+{
+  "success": true,
+  "data": {
+    "id": "uuid",
+    "name": "Engineering",
+    "color": "#3b82f6",
+    "members": [
+      {
+        "id": "uuid",
+        "employeeId": "uuid",
+        "joinedAt": "2026-04-14T00:00:00Z",
+        "employee": { "id": "uuid", "name": "สมชาย", "email": "s@x.com", "avatarUrl": null }
+      }
+    ]
+  }
+}
+```
+
+### Errors
+| Code | HTTP | เงื่อนไข |
+|---|---|---|
+| `NOT_FOUND` | 404 | ไม่พบ space |
+| `FORBIDDEN` | 403 | ไม่ได้เป็น member |
+
+---
+
+## POST /spaces ✅
+
+สร้าง space ใหม่
+
+**Auth required:** ✅ Bearer token
+
+### Request Body
+```json
+{
+  "name": "Engineering",
+  "color": "#3b82f6",
+  "icon": "💻",
+  "memberIds": ["uuid1", "uuid2"]
+}
+```
+
+| Field | Type | Required | หมายเหตุ |
+|---|---|---|---|
+| `name` | string | ✅ | max 100 ตัว |
+| `color` | string | ❌ | hex color, default `#3b82f6` |
+| `icon` | string | ❌ | emoji หรือ icon name |
+| `memberIds` | string[] | ❌ | UUID ของพนักงานที่เพิ่มเป็น member ทันที |
+
+### Response 201
+```json
+{ "success": true, "message": "สร้าง space สำเร็จ", "data": { "id": "uuid", "name": "Engineering", ... } }
+```
+
+---
+
+## PUT /spaces/:id ✅
+
+แก้ชื่อ/สี/icon/ลำดับของ space
+
+**Auth required:** ✅ Bearer token | member ของ space หรือ admin
+
+---
+
+## DELETE /spaces/:id ✅
+
+ลบ space — block ถ้ายังมี folder หรือ list อยู่
+
+**Auth required:** ✅ Bearer token
+
+### Errors
+| Code | HTTP | เงื่อนไข |
+|---|---|---|
+| `SPACE_HAS_ACTIVE_CONTENT` | 409 | ยังมี folder หรือ list อยู่ภายใน |
+
+---
+
+## POST /spaces/:id/members ✅
+
+เพิ่มสมาชิกเข้า space (batch)
+
+**Auth required:** ✅ Bearer token
+
+### Request Body
+```json
+{ "employeeIds": ["uuid1", "uuid2"] }
+```
+
+---
+
+## DELETE /spaces/:id/members/:employeeId ✅
+
+ลบสมาชิกออกจาก space
+
+**Auth required:** ✅ Bearer token
+
+---
+
+## GET /folders ✅
+
+ดึง folder ทั้งหมดใน space — default ซ่อน archived
+
+**Auth required:** ✅ Bearer token | member ของ space
+
+### Query Parameters
+| Param | Type | Required | หมายเหตุ |
+|---|---|---|---|
+| `spaceId` | uuid | ✅ | |
+| `includeArchived` | boolean | ❌ | default `false` |
+
+---
+
+## POST /folders ✅
+
+สร้าง folder ใหม่ใน space
+
+**Auth required:** ✅ Bearer token | member ของ space
+
+### Request Body
+```json
+{ "name": "Sprint 1", "spaceId": "uuid", "color": "#f59e0b" }
+```
+
+---
+
+## PUT /folders/:id ✅
+
+แก้ชื่อ/สี/ลำดับ folder
+
+**Auth required:** ✅ Bearer token
+
+---
+
+## PATCH /folders/:id/archive ✅
+
+Archive folder (ซ่อนจาก sidebar)
+
+**Auth required:** ✅ Bearer token
+
+---
+
+## PATCH /folders/:id/restore ✅
+
+Restore folder ออกจาก archive
+
+**Auth required:** ✅ Bearer token
+
+---
+
+## DELETE /folders/:id ✅
+
+ลบ folder ถาวร — ต้อง archive ก่อน
+
+**Auth required:** ✅ Bearer token
+
+### Errors
+| Code | HTTP | เงื่อนไข |
+|---|---|---|
+| `FOLDER_NOT_ARCHIVED` | 400 | folder ยังไม่ได้ archive |
+
+---
+
+## GET /lists ✅
+
+ดึง list ใน space/folder พร้อม statuses และ task count
+
+**Auth required:** ✅ Bearer token | member ของ space
+
+### Query Parameters
+| Param | Type | Required | หมายเหตุ |
+|---|---|---|---|
+| `spaceId` | uuid | ✅ | |
+| `folderId` | uuid | ❌ | filter เฉพาะ folder นั้น |
+
+### Response 200
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "uuid", "name": "Backlog",
+      "taskCount": 12, "doneCount": 5,
+      "statuses": [
+        { "id": "uuid", "name": "Open", "color": "#6b7280", "type": "open", "displayOrder": 1 }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## POST /lists ✅
+
+สร้าง list ใหม่ — auto-seed 5 statuses (Open → In Progress → Review → Done → Closed)
+
+**Auth required:** ✅ Bearer token | member ของ space
+
+### Request Body
+```json
+{ "name": "Backlog", "spaceId": "uuid", "folderId": "uuid" }
+```
+
+---
+
+## PUT /lists/:id ✅
+
+แก้ชื่อ/สี/ลำดับ list
+
+---
+
+## DELETE /lists/:id ✅
+
+ลบ list — block ถ้ายังมี active task
+
+### Errors
+| Code | HTTP | เงื่อนไข |
+|---|---|---|
+| `LIST_HAS_ACTIVE_TASKS` | 409 | ยังมี task ที่ยังไม่ลบอยู่ใน list |
+
+---
+
+## GET /lists/:id/statuses ✅
+
+ดึง status columns ของ list
+
+---
+
+## POST /lists/:id/statuses ✅
+
+เพิ่ม status column ใหม่
+
+### Request Body
+```json
+{ "name": "QA", "color": "#ec4899", "type": "review" }
+```
+
+---
+
+## PUT /lists/:id/statuses/reorder ✅
+
+เรียงลำดับ status columns ใหม่ (drag & drop)
+
+### Request Body
+```json
+{ "orderedIds": ["uuid1", "uuid2", "uuid3"] }
+```
+
+---
+
+## PUT /lists/:id/statuses/:statusId ✅
+
+แก้ชื่อ/สี/ประเภทของ status column
+
+---
+
+## DELETE /lists/:id/statuses/:statusId ✅
+
+ลบ status column — block ถ้ายังมี task ใช้ status นี้
+
+### Errors
+| Code | HTTP | เงื่อนไข |
+|---|---|---|
+| `STATUS_IN_USE` | 409 | ยังมี task ที่ใช้ status นี้อยู่ |
+
+---
+
 > 📌 endpoint ที่ยังไม่ได้ระบุ response shape จะอัปเดตเมื่อ implement เสร็จ

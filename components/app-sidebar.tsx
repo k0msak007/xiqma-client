@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -10,7 +10,6 @@ import {
   FolderKanban,
   BarChart3,
   Settings,
-  Users,
   Plus,
   Search,
   Code,
@@ -25,17 +24,16 @@ import {
   Heart,
   Calendar,
   CheckCircle2,
-  Shield,
-  UserCog,
   Archive,
   RotateCcw,
-  Layers,
   Clock,
   GanttChart,
+  Loader2,
+  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useWorkspaceStore } from "@/lib/workspace-store";
 import { useTaskStore } from "@/lib/store";
-import { getFoldersBySpaceId, getListsByFolderId, getListsWithoutFolder } from "@/lib/mock-data";
 import {
   Sidebar,
   SidebarContent,
@@ -66,7 +64,11 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { CreateSpaceDialog } from "@/components/create-space-dialog";
+import { CreateFolderDialog } from "@/components/create-folder-dialog";
+import { CreateListDialog } from "@/components/create-list-dialog";
+import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import { LanguageSwitcher } from "@/components/language-switcher";
+import { useAuthStore } from "@/lib/auth-store";
 
 const spaceIcons: Record<string, React.ReactNode> = {
   Code: <Code className="h-4 w-4" />,
@@ -96,27 +98,59 @@ const toolNavItems = [
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const { user } = useAuthStore();
+
   const {
     spaces,
     folders,
-    navigation,
+    lists,
+    loading,
     expandedSpaces,
     expandedFolders,
     toggleSpaceExpanded,
     toggleFolderExpanded,
-    setActiveList,
+    loadWorkspace,
     archiveFolder,
     restoreFolder,
-  } = useTaskStore();
+    deleteSpace,
+    deleteFolder,
+    deleteList,
+  } = useWorkspaceStore();
 
-  const [hoveredSpace, setHoveredSpace] = useState<string | null>(null);
+  const { navigation, setActiveList } = useTaskStore();
+  const { logout } = useAuthStore();
+
   const [showCreateSpaceDialog, setShowCreateSpaceDialog] = useState(false);
   const [archiveExpanded, setArchiveExpanded] = useState(false);
 
-  // Get archived folders
-  const archivedFolders = folders.filter((f) => f.archived);
-  // Get active folders (for showing in spaces)
-  const activeFolders = folders.filter((f) => !f.archived);
+  // Create dialog state
+  const [createFolderSpaceId, setCreateFolderSpaceId] = useState<string | null>(null);
+  const [createListState, setCreateListState] = useState<{ spaceId: string; folderId?: string } | null>(null);
+
+  // Delete confirm dialog state
+  const [deleteTarget, setDeleteTarget] = useState<{
+    type: "space" | "folder" | "list";
+    id: string;
+    name: string;
+  } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    if (deleteTarget.type === "space")  await deleteSpace(deleteTarget.id);
+    if (deleteTarget.type === "folder") await deleteFolder(deleteTarget.id);
+    if (deleteTarget.type === "list")   await deleteList(deleteTarget.id);
+    setDeleting(false);
+    setDeleteTarget(null);
+  };
+
+  // Load workspace data on mount
+  useEffect(() => {
+    loadWorkspace();
+  }, [loadWorkspace]);
+
+  const archivedFolders = folders.filter((f) => f.isArchived);
 
   return (
     <Sidebar className="border-r border-border/50">
@@ -157,20 +191,26 @@ export function AppSidebar() {
             <SidebarGroupLabel className="text-xs font-medium text-muted-foreground">
               Spaces
             </SidebarGroupLabel>
-            <Button 
-              variant="ghost" 
-              size="icon" 
+            <Button
+              variant="ghost"
+              size="icon"
               className="h-5 w-5"
               onClick={() => setShowCreateSpaceDialog(true)}
+              title="Create Space"
             >
-              <Plus className="h-3 w-3" />
+              {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
             </Button>
           </div>
+
           <SidebarGroupContent>
             <SidebarMenu>
               {spaces.map((space) => {
-                const spaceFolders = getFoldersBySpaceId(space.id).filter((f) => !f.archived);
-                const listsWithoutFolder = getListsWithoutFolder(space.id);
+                const spaceFolders = folders.filter(
+                  (f) => f.spaceId === space.id && !f.isArchived
+                );
+                const listsWithoutFolder = lists.filter(
+                  (l) => l.spaceId === space.id && !l.folderId
+                );
                 const isExpanded = expandedSpaces.includes(space.id);
 
                 return (
@@ -179,60 +219,75 @@ export function AppSidebar() {
                     open={isExpanded}
                     onOpenChange={() => toggleSpaceExpanded(space.id)}
                   >
-                    <SidebarMenuItem
-                      onMouseEnter={() => setHoveredSpace(space.id)}
-                      onMouseLeave={() => setHoveredSpace(null)}
-                    >
-                      <CollapsibleTrigger asChild>
-                        <SidebarMenuButton className="w-full">
-                          <div
-                            className="flex h-5 w-5 items-center justify-center rounded"
-                            style={{ backgroundColor: space.color }}
-                          >
-                            {space.icon && spaceIcons[space.icon] ? (
-                              <span className="text-white">
-                                {spaceIcons[space.icon]}
-                              </span>
+                    <SidebarMenuItem className="group/space">
+                      <div className="flex items-center w-full">
+                        <CollapsibleTrigger asChild>
+                          <SidebarMenuButton className="flex-1">
+                            <div
+                              className="flex h-5 w-5 items-center justify-center rounded flex-shrink-0"
+                              style={{ backgroundColor: space.color }}
+                            >
+                              {space.icon && spaceIcons[space.icon] ? (
+                                <span className="text-white">{spaceIcons[space.icon]}</span>
+                              ) : (
+                                <span className="text-xs font-bold text-white">
+                                  {space.name.charAt(0)}
+                                </span>
+                              )}
+                            </div>
+                            <span className="flex-1 truncate">{space.name}</span>
+                            {isExpanded ? (
+                              <ChevronDown className="h-4 w-4 text-muted-foreground" />
                             ) : (
-                              <span className="text-xs font-bold text-white">
-                                {space.name.charAt(0)}
-                              </span>
+                              <ChevronRight className="h-4 w-4 text-muted-foreground" />
                             )}
-                          </div>
-                          <span className="flex-1 truncate">{space.name}</span>
-                          {isExpanded ? (
-                            <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                          ) : (
-                            <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                          )}
-                        </SidebarMenuButton>
-                      </CollapsibleTrigger>
-                      {hoveredSpace === space.id && (
+                          </SidebarMenuButton>
+                        </CollapsibleTrigger>
+
+                        {/* Space context menu */}
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 opacity-0 group-hover:opacity-100"
+                              className="h-6 w-6 opacity-0 group-hover/space:opacity-100 flex-shrink-0"
                             >
                               <MoreHorizontal className="h-4 w-4" />
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem>Add Folder</DropdownMenuItem>
-                            <DropdownMenuItem>Add List</DropdownMenuItem>
+                          <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem
+                              onClick={() => setCreateFolderSpaceId(space.id)}
+                            >
+                              <Plus className="h-4 w-4 mr-2" />
+                              Add Folder
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => setCreateListState({ spaceId: space.id })}
+                            >
+                              <Plus className="h-4 w-4 mr-2" />
+                              Add List
+                            </DropdownMenuItem>
                             <DropdownMenuSeparator />
-                            <DropdownMenuItem>Settings</DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="text-destructive focus:text-destructive"
+                              onClick={() => setDeleteTarget({ type: "space", id: space.id, name: space.name })}
+                            >
+                              <Trash2 className="h-4 w-4 mr-2" />
+                              Delete Space
+                            </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
-                      )}
+                      </div>
                     </SidebarMenuItem>
 
                     <CollapsibleContent>
                       <SidebarMenuSub>
                         {/* Folders */}
                         {spaceFolders.map((folder) => {
-                          const listsInFolder = getListsByFolderId(folder.id);
+                          const listsInFolder = lists.filter(
+                            (l) => l.folderId === folder.id
+                          );
                           const isFolderExpanded = expandedFolders.includes(folder.id);
 
                           return (
@@ -241,41 +296,105 @@ export function AppSidebar() {
                               open={isFolderExpanded}
                               onOpenChange={() => toggleFolderExpanded(folder.id)}
                             >
-                              <SidebarMenuSubItem>
-                                <CollapsibleTrigger asChild>
-                                  <SidebarMenuSubButton className="w-full">
-                                    {isFolderExpanded ? (
-                                      <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                                    ) : (
-                                      <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                                    )}
-                                    <FolderKanban
-                                      className="h-3.5 w-3.5"
-                                      style={{ color: folder.color || space.color }}
-                                    />
-                                    <span className="flex-1 truncate text-sm">
-                                      {folder.name}
-                                    </span>
-                                  </SidebarMenuSubButton>
-                                </CollapsibleTrigger>
+                              <SidebarMenuSubItem className="group/folder">
+                                <div className="flex items-center w-full">
+                                  <CollapsibleTrigger asChild>
+                                    <SidebarMenuSubButton className="flex-1">
+                                      {isFolderExpanded ? (
+                                        <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                                      ) : (
+                                        <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                                      )}
+                                      <FolderKanban
+                                        className="h-3.5 w-3.5"
+                                        style={{ color: folder.color || space.color }}
+                                      />
+                                      <span className="flex-1 truncate text-sm">{folder.name}</span>
+                                    </SidebarMenuSubButton>
+                                  </CollapsibleTrigger>
+
+                                  {/* Folder context menu */}
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-5 w-5 opacity-0 group-hover/folder:opacity-100 flex-shrink-0"
+                                      >
+                                        <MoreHorizontal className="h-3 w-3" />
+                                      </Button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent align="end" className="w-44">
+                                      <DropdownMenuItem
+                                        onClick={() =>
+                                          setCreateListState({
+                                            spaceId: space.id,
+                                            folderId: folder.id,
+                                          })
+                                        }
+                                      >
+                                        <Plus className="h-4 w-4 mr-2" />
+                                        Add List
+                                      </DropdownMenuItem>
+                                      <DropdownMenuSeparator />
+                                      <DropdownMenuItem
+                                        onClick={() => archiveFolder(folder.id)}
+                                      >
+                                        <Archive className="h-4 w-4 mr-2" />
+                                        Archive Folder
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem
+                                        className="text-destructive focus:text-destructive"
+                                        onClick={() => setDeleteTarget({ type: "folder", id: folder.id, name: folder.name })}
+                                      >
+                                        <Trash2 className="h-4 w-4 mr-2" />
+                                        Delete Folder
+                                      </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                </div>
                               </SidebarMenuSubItem>
 
                               <CollapsibleContent>
                                 <SidebarMenuSub className="ml-4">
                                   {listsInFolder.map((list) => (
-                                    <SidebarMenuSubItem key={list.id}>
-                                      <SidebarMenuSubButton
-                                        asChild
-                                        isActive={navigation.activeListId === list.id}
-                                      >
-                                        <Link
-                                          href={`/list/${list.id}`}
-                                          onClick={() => setActiveList(list.id)}
+                                    <SidebarMenuSubItem key={list.id} className="group/list">
+                                      <div className="flex items-center w-full">
+                                        <SidebarMenuSubButton
+                                          asChild
+                                          isActive={navigation.activeListId === list.id}
+                                          className="flex-1"
                                         >
-                                          <ListTodo className="h-3.5 w-3.5" />
-                                          <span className="text-sm">{list.name}</span>
-                                        </Link>
-                                      </SidebarMenuSubButton>
+                                          <Link
+                                            href={`/list/${list.id}`}
+                                            onClick={() => setActiveList(list.id)}
+                                          >
+                                            <ListTodo className="h-3.5 w-3.5" />
+                                            <span className="text-sm flex-1 truncate">{list.name}</span>
+                                            {list.taskCount > 0 && (
+                                              <span className="text-xs text-muted-foreground ml-auto">
+                                                {list.doneCount}/{list.taskCount}
+                                              </span>
+                                            )}
+                                          </Link>
+                                        </SidebarMenuSubButton>
+                                        <DropdownMenu>
+                                          <DropdownMenuTrigger asChild>
+                                            <Button variant="ghost" size="icon" className="h-5 w-5 opacity-0 group-hover/list:opacity-100 flex-shrink-0">
+                                              <MoreHorizontal className="h-3 w-3" />
+                                            </Button>
+                                          </DropdownMenuTrigger>
+                                          <DropdownMenuContent align="end" className="w-36">
+                                            <DropdownMenuItem
+                                              className="text-destructive focus:text-destructive"
+                                              onClick={() => setDeleteTarget({ type: "list", id: list.id, name: list.name })}
+                                            >
+                                              <Trash2 className="h-4 w-4 mr-2" />
+                                              Delete List
+                                            </DropdownMenuItem>
+                                          </DropdownMenuContent>
+                                        </DropdownMenu>
+                                      </div>
                                     </SidebarMenuSubItem>
                                   ))}
                                 </SidebarMenuSub>
@@ -286,19 +405,43 @@ export function AppSidebar() {
 
                         {/* Lists without folder */}
                         {listsWithoutFolder.map((list) => (
-                          <SidebarMenuSubItem key={list.id}>
-                            <SidebarMenuSubButton
-                              asChild
-                              isActive={navigation.activeListId === list.id}
-                            >
-                              <Link
-                                href={`/list/${list.id}`}
-                                onClick={() => setActiveList(list.id)}
+                          <SidebarMenuSubItem key={list.id} className="group/list">
+                            <div className="flex items-center w-full">
+                              <SidebarMenuSubButton
+                                asChild
+                                isActive={navigation.activeListId === list.id}
+                                className="flex-1"
                               >
-                                <ListTodo className="h-3.5 w-3.5" />
-                                <span className="text-sm">{list.name}</span>
-                              </Link>
-                            </SidebarMenuSubButton>
+                                <Link
+                                  href={`/list/${list.id}`}
+                                  onClick={() => setActiveList(list.id)}
+                                >
+                                  <ListTodo className="h-3.5 w-3.5" />
+                                  <span className="text-sm">{list.name}</span>
+                                  {list.taskCount > 0 && (
+                                    <span className="text-xs text-muted-foreground ml-auto">
+                                      {list.doneCount}/{list.taskCount}
+                                    </span>
+                                  )}
+                                </Link>
+                              </SidebarMenuSubButton>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button variant="ghost" size="icon" className="h-5 w-5 opacity-0 group-hover/list:opacity-100 flex-shrink-0">
+                                    <MoreHorizontal className="h-3 w-3" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="w-36">
+                                  <DropdownMenuItem
+                                    className="text-destructive focus:text-destructive"
+                                    onClick={() => setDeleteTarget({ type: "list", id: list.id, name: list.name })}
+                                  >
+                                    <Trash2 className="h-4 w-4 mr-2" />
+                                    Delete List
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </div>
                           </SidebarMenuSubItem>
                         ))}
                       </SidebarMenuSub>
@@ -306,6 +449,21 @@ export function AppSidebar() {
                   </Collapsible>
                 );
               })}
+
+              {/* Empty state */}
+              {!loading && spaces.length === 0 && (
+                <div className="px-2 py-4 text-center">
+                  <p className="text-xs text-muted-foreground">No spaces yet</p>
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="text-xs h-auto p-0 mt-1"
+                    onClick={() => setShowCreateSpaceDialog(true)}
+                  >
+                    Create your first space
+                  </Button>
+                </div>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -318,7 +476,7 @@ export function AppSidebar() {
                 <div className="flex items-center justify-between px-2 cursor-pointer">
                   <SidebarGroupLabel className="text-xs font-medium text-muted-foreground flex items-center gap-2">
                     <Archive className="h-3.5 w-3.5" />
-                    Archive
+                    Archive ({archivedFolders.length})
                   </SidebarGroupLabel>
                   {archiveExpanded ? (
                     <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
@@ -344,6 +502,7 @@ export function AppSidebar() {
                               variant="ghost"
                               size="icon"
                               className="h-5 w-5 opacity-0 group-hover:opacity-100"
+                              title="Restore folder"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 restoreFolder(folder.id);
@@ -392,12 +551,12 @@ export function AppSidebar() {
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-auto w-full justify-start gap-3 px-2">
               <Avatar className="h-8 w-8">
-                <AvatarImage src="https://api.dicebear.com/7.x/avataaars/svg?seed=Alex" />
-                <AvatarFallback>AJ</AvatarFallback>
+                <AvatarImage src={(user as any)?.avatarUrl} />
+                <AvatarFallback>{user?.name?.charAt(0) ?? "U"}</AvatarFallback>
               </Avatar>
               <div className="flex flex-col items-start text-left">
-                <span className="text-sm font-medium">Alex Johnson</span>
-                <span className="text-xs text-muted-foreground">Admin</span>
+                <span className="text-sm font-medium">{user?.name ?? "User"}</span>
+                <span className="text-xs text-muted-foreground">{user?.role ?? ""}</span>
               </div>
             </Button>
           </DropdownMenuTrigger>
@@ -405,17 +564,53 @@ export function AppSidebar() {
             <DropdownMenuItem asChild>
               <Link href="/profile">Profile</Link>
             </DropdownMenuItem>
-            <DropdownMenuItem>Preferences</DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem>Sign out</DropdownMenuItem>
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onClick={() => logout()}
+            >
+              Sign out
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarFooter>
 
-      {/* Create Space Dialog */}
-      <CreateSpaceDialog 
-        open={showCreateSpaceDialog} 
-        onOpenChange={setShowCreateSpaceDialog} 
+      {/* Dialogs */}
+      <CreateSpaceDialog
+        open={showCreateSpaceDialog}
+        onOpenChange={setShowCreateSpaceDialog}
+      />
+
+      <CreateFolderDialog
+        spaceId={createFolderSpaceId}
+        onOpenChange={(open) => !open && setCreateFolderSpaceId(null)}
+      />
+
+      <CreateListDialog
+        spaceId={createListState?.spaceId ?? null}
+        folderId={createListState?.folderId}
+        onOpenChange={(open) => !open && setCreateListState(null)}
+      />
+
+      <ConfirmDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        loading={deleting}
+        title={
+          !deleteTarget ? "" :
+          deleteTarget.type === "space"  ? `Delete Space "${deleteTarget.name}"?` :
+          deleteTarget.type === "folder" ? `Delete Folder "${deleteTarget.name}"?` :
+                                           `Delete List "${deleteTarget.name}"?`
+        }
+        description={
+          !deleteTarget ? "" :
+          deleteTarget.type === "space"
+            ? "This will permanently delete the space, all folders, lists, and tasks inside. This action cannot be undone."
+            : deleteTarget.type === "folder"
+            ? "This will permanently delete the folder, all lists, and tasks inside. This action cannot be undone."
+            : "This will permanently delete the list and all tasks inside. This action cannot be undone."
+        }
+        onConfirm={handleDeleteConfirm}
       />
     </Sidebar>
   );

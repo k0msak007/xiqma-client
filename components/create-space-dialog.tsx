@@ -12,74 +12,81 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useTaskStore } from "@/lib/store";
-import { Code, Megaphone, Palette, Briefcase, Rocket, Target, Lightbulb, Heart, Building2, User } from "lucide-react";
-import { cn } from "@/lib/utils";
-import type { Space, SpaceType } from "@/lib/types";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import {
+  Code,
+  Megaphone,
+  Palette,
+  Briefcase,
+  Rocket,
+  Target,
+  Lightbulb,
+  Heart,
+  Building2,
+  User,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+import { useWorkspaceStore } from "@/lib/workspace-store";
 
 const spaceColors = [
-  "#3b82f6", // blue
-  "#10b981", // green
-  "#f59e0b", // amber
-  "#ef4444", // red
-  "#8b5cf6", // violet
-  "#ec4899", // pink
-  "#06b6d4", // cyan
-  "#f97316", // orange
+  "#3b82f6",
+  "#10b981",
+  "#f59e0b",
+  "#ef4444",
+  "#8b5cf6",
+  "#ec4899",
+  "#06b6d4",
+  "#f97316",
 ];
 
 const spaceIcons = [
-  { id: "Code", icon: Code, label: "Development" },
-  { id: "Megaphone", icon: Megaphone, label: "Marketing" },
-  { id: "Palette", icon: Palette, label: "Design" },
-  { id: "Briefcase", icon: Briefcase, label: "Business" },
-  { id: "Rocket", icon: Rocket, label: "Launch" },
-  { id: "Target", icon: Target, label: "Goals" },
-  { id: "Lightbulb", icon: Lightbulb, label: "Ideas" },
-  { id: "Heart", icon: Heart, label: "Personal" },
+  { id: "Code",      icon: Code,      label: "Development" },
+  { id: "Megaphone", icon: Megaphone, label: "Marketing"   },
+  { id: "Palette",   icon: Palette,   label: "Design"      },
+  { id: "Briefcase", icon: Briefcase, label: "Business"    },
+  { id: "Rocket",    icon: Rocket,    label: "Launch"      },
+  { id: "Target",    icon: Target,    label: "Goals"       },
+  { id: "Lightbulb", icon: Lightbulb, label: "Ideas"       },
+  { id: "Heart",     icon: Heart,     label: "Personal"    },
 ];
 
-interface CreateSpaceDialogProps {
+interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-export function CreateSpaceDialog({ open, onOpenChange }: CreateSpaceDialogProps) {
-  const { addSpace } = useTaskStore();
-  const [name, setName] = useState("");
-  const [selectedColor, setSelectedColor] = useState(spaceColors[0]);
-  const [selectedIcon, setSelectedIcon] = useState<string>("Code");
-  const [spaceType, setSpaceType] = useState<SpaceType>("organization");
+export function CreateSpaceDialog({ open, onOpenChange }: Props) {
+  const { createSpace } = useWorkspaceStore();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [name, setName]                     = useState("");
+  const [selectedColor, setSelectedColor]   = useState(spaceColors[0]);
+  const [selectedIcon, setSelectedIcon]     = useState("Code");
+  const [spaceType, setSpaceType]           = useState<"organization" | "private">("organization");
+  const [loading, setLoading]               = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
     if (!name.trim()) return;
 
-    const newSpace: Space = {
-      id: `space-${Date.now()}`,
-      name: name.trim(),
+    setLoading(true);
+    const space = await createSpace({
+      name:  name.trim(),
       color: selectedColor,
-      icon: selectedIcon,
-      type: spaceType,
-      ownerId: spaceType === "private" ? "user-1" : undefined,
-      memberIds: ["user-1"],
-      order: Date.now(),
-      createdAt: new Date(),
-    };
+      icon:  selectedIcon,
+    });
+    setLoading(false);
 
-    addSpace(newSpace);
-    
-    setName("");
-    setSelectedColor(spaceColors[0]);
-    setSelectedIcon("Code");
-    setSpaceType("organization");
-    onOpenChange(false);
+    if (space) {
+      setName("");
+      setSelectedColor(spaceColors[0]);
+      setSelectedIcon("Code");
+      setSpaceType("organization");
+      onOpenChange(false);
+    }
   };
 
-  const SelectedIconComponent = spaceIcons.find(i => i.id === selectedIcon)?.icon || Code;
+  const SelectedIconComponent = spaceIcons.find((i) => i.id === selectedIcon)?.icon ?? Code;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -93,29 +100,22 @@ export function CreateSpaceDialog({ open, onOpenChange }: CreateSpaceDialogProps
           </DialogHeader>
 
           <div className="grid gap-6 py-6">
-            {/* Space Type Selection */}
+            {/* Type */}
             <div className="space-y-2">
               <Label>Space Type</Label>
-              <Tabs value={spaceType} onValueChange={(v) => setSpaceType(v as SpaceType)} className="w-full">
+              <Tabs value={spaceType} onValueChange={(v) => setSpaceType(v as any)} className="w-full">
                 <TabsList className="grid w-full grid-cols-2">
                   <TabsTrigger value="organization" className="gap-2">
-                    <Building2 className="h-4 w-4" />
-                    Organization
+                    <Building2 className="h-4 w-4" /> Organization
                   </TabsTrigger>
                   <TabsTrigger value="private" className="gap-2">
-                    <User className="h-4 w-4" />
-                    Private
+                    <User className="h-4 w-4" /> Private
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
-              <p className="text-xs text-muted-foreground">
-                {spaceType === "organization" 
-                  ? "Organization spaces are for team projects and shared work."
-                  : "Private spaces are for personal tasks like meetings and consultations."}
-              </p>
             </div>
 
-            {/* Space Preview */}
+            {/* Preview */}
             <div className="flex items-center gap-3 rounded-lg border p-4 bg-muted/30">
               <div
                 className="flex h-10 w-10 items-center justify-center rounded-lg"
@@ -126,7 +126,10 @@ export function CreateSpaceDialog({ open, onOpenChange }: CreateSpaceDialogProps
               <div className="flex-1">
                 <div className="flex items-center gap-2">
                   <p className="font-medium">{name || "Space Name"}</p>
-                  <Badge variant={spaceType === "organization" ? "default" : "secondary"} className="text-[10px] px-1.5 py-0">
+                  <Badge
+                    variant={spaceType === "organization" ? "default" : "secondary"}
+                    className="text-[10px] px-1.5 py-0"
+                  >
                     {spaceType === "organization" ? "Org" : "Private"}
                   </Badge>
                 </div>
@@ -134,19 +137,23 @@ export function CreateSpaceDialog({ open, onOpenChange }: CreateSpaceDialogProps
               </div>
             </div>
 
-            {/* Name Input */}
+            {/* Name */}
             <div className="space-y-2">
               <Label htmlFor="name">Space Name</Label>
               <Input
                 id="name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={spaceType === "organization" ? "e.g., Product Development" : "e.g., My Personal Tasks"}
                 autoFocus
+                onChange={(e) => setName(e.target.value)}
+                placeholder={
+                  spaceType === "organization"
+                    ? "e.g., Product Development"
+                    : "e.g., My Personal Tasks"
+                }
               />
             </div>
 
-            {/* Color Selection */}
+            {/* Color */}
             <div className="space-y-2">
               <Label>Color</Label>
               <div className="flex flex-wrap gap-2">
@@ -158,17 +165,14 @@ export function CreateSpaceDialog({ open, onOpenChange }: CreateSpaceDialogProps
                       "h-8 w-8 rounded-full transition-all",
                       selectedColor === color && "ring-2 ring-offset-2 ring-offset-background"
                     )}
-                    style={{ 
-                      backgroundColor: color,
-                      ringColor: color
-                    }}
+                    style={{ backgroundColor: color }}
                     onClick={() => setSelectedColor(color)}
                   />
                 ))}
               </div>
             </div>
 
-            {/* Icon Selection */}
+            {/* Icon */}
             <div className="space-y-2">
               <Label>Icon</Label>
               <div className="grid grid-cols-4 gap-2">
@@ -194,8 +198,8 @@ export function CreateSpaceDialog({ open, onOpenChange }: CreateSpaceDialogProps
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={!name.trim()}>
-              Create Space
+            <Button type="submit" disabled={!name.trim() || loading}>
+              {loading ? "Creating..." : "Create Space"}
             </Button>
           </DialogFooter>
         </form>

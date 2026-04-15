@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { authApi, type AuthUser, type LoginCredentials } from "./api/auth";
 import { tokenManager } from "./token";
+import { useWorkspaceStore } from "./workspace-store";
 
 interface AuthState {
   // State
@@ -33,6 +34,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     tokenManager.saveUser(data.user);
 
     set({ user: data.user, isAuthenticated: true });
+
+    // Load workspace data after successful login
+    useWorkspaceStore.getState().loadWorkspace();
   },
 
   // ---- Logout ----
@@ -46,7 +50,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       }
     }
     tokenManager.clearTokens();
-    set({ user: null, isAuthenticated: false });
+    set({ user: null, isAuthenticated: false, isLoading: false });
+
+    // Clear workspace data on logout
+    useWorkspaceStore.setState({ spaces: [], folders: [], lists: [] });
   },
 
   // ---- Change Password ----
@@ -86,6 +93,9 @@ export const useAuthStore = create<AuthState>((set) => ({
         isAuthenticated: true,
         isLoading: false,
       }));
+
+      // Load workspace after session restored
+      useWorkspaceStore.getState().loadWorkspace();
     } catch {
       tokenManager.clearTokens();
       set({ user: null, isAuthenticated: false, isLoading: false });
