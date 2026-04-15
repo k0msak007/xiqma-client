@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { format } from "date-fns";
 import { th, enUS } from "date-fns/locale";
@@ -64,14 +64,16 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useTaskStore } from "@/lib/store";
-import { getUserById, getListById } from "@/lib/mock-data";
+import { getUserById, getListById, statuses } from "@/lib/mock-data";
 import {
-  priorityConfig,
   calculatePlanFinish,
   calculatePlanProgress,
-  type Comment,
 } from "@/lib/types";
 import { useTranslation } from "@/lib/i18n";
+import { tasksApi, type ApiTaskDetail } from "@/lib/api/tasks";
+import { commentsApi, type Comment as ApiComment } from "@/lib/api/comments";
+import { listsApi, type ListStatus } from "@/lib/api/lists";
+import { useAuthStore } from "@/lib/auth-store";
 
 export default function TaskViewPage() {
   const router = useRouter();
@@ -80,29 +82,100 @@ export default function TaskViewPage() {
   const { t, language } = useTranslation();
   const locale = language === "th" ? th : enUS;
 
-  const { 
-    tasks, 
-    users, 
-    statuses, 
-    taskTypes, 
-    updateTask, 
-    addComment, 
-    updateComment, 
-    deleteComment 
-  } = useTaskStore();
+  const [task, setTask] = useState<ApiTaskDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const task = tasks.find((t) => t.id === taskId);
+  // Statuses from API
+  const [statusesFromApi, setStatusesFromApi] = useState<ListStatus[]>([]);
+
+  // Comments
+  const [comments, setComments] = useState<ApiComment[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsError, setCommentsError] = useState<string | null>(null);
+
+  // Local state
   const [newComment, setNewComment] = useState("");
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingCommentContent, setEditingCommentContent] = useState("");
+  const [estimateProgress, setEstimateProgress] = useState(0);
   const [showEditProgressDialog, setShowEditProgressDialog] = useState(false);
-  const [estimateProgress, setEstimateProgress] = useState(task?.estimateProgress || 0);
 
-  // Current user (mock - in real app would come from auth)
-  const currentUserId = "user-1";
-  const currentUser = getUserById(currentUserId);
+  // Get current user from auth store
+  const user = useAuthStore((s) => s.user);
+  const currentUserId = user?.id || "";
+  const currentUser = user ? { name: user.name, avatar: user.avatar || undefined } : null;
 
-  if (!task) {
+  // Load task from API
+  useEffect(() => {
+    if (taskId) {
+      setLoading(true);
+      setError(null);
+      tasksApi.get(taskId)
+        .then((data) => {
+          console.log("Task loaded:", data);
+          setTask(data);
+          // Set estimate progress from API
+          const progress = data.estimateProgress ?? (data as any).estimate_progress ?? 0;
+          setEstimateProgress(progress);
+          // Load statuses for this task's list
+          // Handle both camelCase and snake_case from API
+          const listId = data.listId || (data as any).list_id;
+          console.log("Loading statuses for listId:", listId);
+          if (listId) {
+            listsApi.getStatuses(listId)
+              .then((statuses) => {
+                console.log("Statuses loaded:", statuses);
+                setStatusesFromApi(statuses);
+              })
+              .catch((err) => {
+                console.error("Failed to load statuses:", err);
+              });
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to load task:", err);
+          setError(err instanceof Error ? err.message : "Failed to load task");
+        })
+        .finally(() => {
+          setLoading(false);
+        });
+    }
+  }, [taskId]);
+
+  // Load comments from API
+  useEffect(() => {
+    if (taskId) {
+      setCommentsLoading(true);
+      setCommentsError(null);
+      commentsApi.list(taskId)
+        .then((data) => {
+          console.log("Comments loaded:", data);
+          setComments(data);
+        })
+        .catch((err) => {
+          console.error("Failed to load comments:", err);
+          setCommentsError(err instanceof Error ? err.message : "Failed to load comments");
+        })
+        .finally(() => {
+          setCommentsLoading(false);
+        });
+    }
+  }, [taskId]);
+
+  const { taskTypes, updateTask } = useTaskStore();
+
+  // If loading, show loading state
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[50vh]">
+        <p className="text-muted-foreground">Loading...</p>
+      </div>
+    );
+  }
+
+  // If error or no task, show error state
+  if (error || !task) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4">
         <h1 className="text-2xl font-bold">
@@ -117,58 +190,117 @@ export default function TaskViewPage() {
   }
 
   const list = getListById(task.listId);
-  const status = statuses.find((s) => s.id === task.statusId);
+  const status = statuses.find((s) => s.id === task.listStatusId);
   const taskType = taskTypes.find((tt) => tt.id === task.taskTypeId);
-  const assignees = task.assigneeIds.map((id) => getUserById(id)).filter(Boolean);
-  const planFinish = calculatePlanFinish(task.planStart, task.duration);
-  const planProgress = calculatePlanProgress(task.planStart, task.duration);
-  const priority = priorityConfig[task.priority];
+  
+  // Handle date fields from API (both camelCase and snake_case)
+  const planStartStr = task.planStart || (task as any).plan_start;
+  const planStart = planStartStr ? new Date(planStartStr) : null;
+  const planFinishStr = task.planFinish || (task as any).plan_finish;
+  const planFinish = planFinishStr ? new Date(planFinishStr) : null;
+  const planProgress = planStart && planFinish ? calculatePlanProgress(planStart, planFinish) : 0;
+
+  // Handle snake_case from API
+  const createdAt = (task as any).createdAt || (task as any).created_at;
+  const updatedAt = (task as any).updatedAt || (task as any).updated_at;
+  
+  // Handle assignee fields from API
+  const assigneeId = task.assigneeId || (task as any).assignee_id;
+  const assigneeName = task.assigneeName || (task as any).assignee_name;
+  const assigneeAvatar = task.assigneeAvatar || (task as any).assignee_avatar;
+  const assignee = assigneeId ? getUserById(assigneeId) : null;
+  
+  // Handle priority from API
+  const priorityValue = task.priority || (task as any).priority || "normal";
+  const priorityLabel = priorityValue.charAt(0).toUpperCase() + priorityValue.slice(1);
+  const priorityColor = priorityValue === "urgent" ? "#ef4444" 
+    : priorityValue === "high" ? "#f97316" 
+    : priorityValue === "low" ? "#6b7280" 
+    : "#3b82f6";
 
   const handleAddComment = () => {
-    if (!newComment.trim()) return;
-
-    const comment: Comment = {
-      id: `comment-${Date.now()}`,
-      content: newComment.trim(),
-      authorId: currentUserId,
-      createdAt: new Date(),
-    };
-
-    addComment(task.id, comment);
-    setNewComment("");
+    if (!newComment.trim() || !taskId) return;
+    commentsApi.create(taskId, { commentText: newComment.trim() })
+      .then((newCommentData) => {
+        setComments([...comments, newCommentData]);
+        setNewComment("");
+      })
+      .catch((err) => {
+        console.error("Failed to add comment:", err);
+      });
   };
 
   const handleEditComment = (commentId: string) => {
-    const comment = task.comments.find((c) => c.id === commentId);
-    if (comment) {
-      setEditingCommentId(commentId);
-      setEditingCommentContent(comment.content);
-    }
+    const commentText = String(rawComment.commentText || rawComment.comment_text || "");
+                    if (commentText) {
+                      setEditingCommentId(commentId);
+                      setEditingCommentContent(commentText);
+                    }
   };
 
   const handleSaveEditComment = () => {
-    if (!editingCommentId || !editingCommentContent.trim()) return;
-    updateComment(task.id, editingCommentId, editingCommentContent.trim());
-    setEditingCommentId(null);
-    setEditingCommentContent("");
+    if (!editingCommentId || !editingCommentContent.trim() || !taskId) return;
+    commentsApi.update(taskId, editingCommentId, { commentText: editingCommentContent.trim() })
+      .then((updatedComment) => {
+        setComments(comments.map((c) => c.id === editingCommentId ? updatedComment : c));
+        setEditingCommentId(null);
+        setEditingCommentContent("");
+      })
+      .catch((err) => {
+        console.error("Failed to update comment:", err);
+      });
   };
 
   const handleDeleteComment = (commentId: string) => {
-    deleteComment(task.id, commentId);
+    if (!taskId) return;
+    commentsApi.delete(taskId, commentId)
+      .then(() => {
+        setComments(comments.filter((c) => c.id !== commentId));
+      })
+      .catch((err) => {
+        console.error("Failed to delete comment:", err);
+      });
   };
 
   const handleSaveProgress = () => {
-    updateTask(task.id, { estimateProgress });
-    setShowEditProgressDialog(false);
+    if (!task) return;
+    tasksApi.update(task.id, { estimateProgress })
+      .then((updated) => {
+        setTask(updated);
+        setShowEditProgressDialog(false);
+      })
+      .catch((err) => {
+        console.error("Failed to update progress:", err);
+      });
   };
 
   const handleStatusChange = (statusId: string) => {
-    updateTask(task.id, { statusId });
+    if (!statusId || !task) return;
+    tasksApi.updateStatus(task.id, { listStatusId: statusId })
+      .then(() => {
+        // Refresh task to get latest data
+        return tasksApi.get(task.id);
+      })
+      .then((updated) => {
+        setTask(updated);
+        // Also refresh statuses in case they changed
+        const listId = updated.listId || (updated as any).list_id;
+        if (listId) {
+          return listsApi.getStatuses(listId);
+        }
+        return null;
+      })
+      .then((statuses) => {
+        if (statuses) {
+          setStatusesFromApi(statuses);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to update status:", err);
+      });
   };
 
-  const sortedComments = [...task.comments].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  );
+  const sortedComments: Comment[] = [];
 
   return (
     <div className="flex flex-col gap-6 p-6 max-w-5xl mx-auto">
@@ -179,7 +311,7 @@ export default function TaskViewPage() {
         </Button>
         <div className="flex-1">
           <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
-            <span className="font-mono">{task.taskId}</span>
+            <span className="font-mono">{task.displayId}</span>
             {list && (
               <>
                 <span>•</span>
@@ -224,7 +356,7 @@ export default function TaskViewPage() {
                 </CardDescription>
               </div>
               <Button variant="outline" size="sm" onClick={() => {
-                setEstimateProgress(task.estimateProgress || 0);
+                setEstimateProgress(0);
                 setShowEditProgressDialog(true);
               }}>
                 <Pencil className="h-4 w-4 mr-1" />
@@ -252,8 +384,8 @@ export default function TaskViewPage() {
                     {language === "th" ? "Estimate Progress" : "Estimate Progress"}
                   </div>
                   <div className="flex items-center gap-3">
-                    <Progress value={task.estimateProgress || 0} className="flex-1 [&>div]:bg-green-500" />
-                    <span className="text-sm font-medium w-12 text-right">{task.estimateProgress || 0}%</span>
+                    <Progress value={estimateProgress} className="flex-1 [&>div]:bg-green-500" />
+                    <span className="text-sm font-medium w-12 text-right">{estimateProgress}%</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
                     {language === "th" ? "ประเมินโดยผู้รับผิดชอบ" : "Estimated by assignee"}
@@ -263,37 +395,24 @@ export default function TaskViewPage() {
             </CardContent>
           </Card>
 
-          {/* Subtasks */}
-          {task.subtasks.length > 0 && (
+{/* Subtasks - API doesn't provide subtask details, show count only */}
+          {task.subtaskCount > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle className="text-base flex items-center gap-2">
                   <CheckSquare className="h-4 w-4" />
                   {language === "th" ? "Subtasks" : "Subtasks"}
                   <Badge variant="secondary">
-                    {task.subtasks.filter((s) => s.completed).length}/{task.subtasks.length}
+                    {task.subtaskCount}
                   </Badge>
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="space-y-2">
-                  {task.subtasks.map((subtask) => (
-                    <div key={subtask.id} className="flex items-center gap-3 p-2 rounded hover:bg-muted/50">
-                      <div className={cn(
-                        "w-4 h-4 rounded border flex items-center justify-center",
-                        subtask.completed ? "bg-primary border-primary" : "border-muted-foreground"
-                      )}>
-                        {subtask.completed && <CheckSquare className="h-3 w-3 text-primary-foreground" />}
-                      </div>
-                      <span className={cn(
-                        "text-sm",
-                        subtask.completed && "line-through text-muted-foreground"
-                      )}>
-                        {subtask.title}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                <p className="text-sm text-muted-foreground">
+                  {language === "th" 
+                    ? `มี ${task.subtaskCount} งานย่อย` 
+                    : `${task.subtaskCount} subtasks`}
+                </p>
               </CardContent>
             </Card>
           )}
@@ -304,7 +423,7 @@ export default function TaskViewPage() {
               <CardTitle className="text-base flex items-center gap-2">
                 <MessageSquare className="h-4 w-4" />
                 {language === "th" ? "Comments" : "Comments"}
-                <Badge variant="secondary">{task.comments.length}</Badge>
+                <Badge variant="secondary">{comments.length}</Badge>
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -312,7 +431,7 @@ export default function TaskViewPage() {
               <div className="flex gap-3">
                 <Avatar className="h-8 w-8">
                   <AvatarImage src={currentUser?.avatar} />
-                  <AvatarFallback>{currentUser?.name.charAt(0)}</AvatarFallback>
+                  <AvatarFallback>{currentUser?.name?.charAt(0) || "?"}</AvatarFallback>
                 </Avatar>
                 <div className="flex-1 space-y-2">
                   <Textarea
@@ -333,26 +452,55 @@ export default function TaskViewPage() {
               <Separator />
 
               {/* Comments List */}
-              <div className="space-y-4">
-                {sortedComments.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-4">
-                    {language === "th" ? "ยังไม่มี comment" : "No comments yet"}
-                  </p>
-                ) : (
-                  sortedComments.map((comment) => {
-                    const author = getUserById(comment.authorId);
+              {commentsLoading ? (
+                <p className="text-sm text-muted-foreground text-center py-4">
+                  {language === "th" ? "กำลังโหลด..." : "Loading..."}
+                </p>
+              ) : comments.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">
+                  {language === "th" ? "ยังไม่มี comment" : "No comments yet"}
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {comments.map((comment) => {
+                    // Handle both camelCase and snake_case from API
+                    const rawComment = comment as Record<string, unknown>;
+                    const commentAuthorName = String(rawComment.authorName || rawComment.author_name || "User");
+                    const commentAuthorAvatar = rawComment.authorAvatar || rawComment.author_avatar || null;
+                    const commentAuthorId = String(rawComment.authorId || rawComment.author_id || "");
+                    const commentText = String(rawComment.commentText || rawComment.comment_text || "");
                     const isEditing = editingCommentId === comment.id;
-                    const isOwner = comment.authorId === currentUserId;
+                    const isOwner = commentAuthorId === currentUserId;
+
+                    console.log("Comment debug:", {
+                      comment,
+                      commentAuthorId,
+                      currentUserId,
+                      isOwner,
+                      commentAuthorAvatar,
+                      commentAuthorName
+                    });
+
+                    // For other users, use their avatar; for owner, use current user's avatar if available
+                    const displayName = isOwner && currentUser ? currentUser.name : commentAuthorName;
+                    const displayAvatar = commentAuthorAvatar as string | undefined;
 
                     return (
                       <div key={comment.id} className="flex gap-3 group">
-                        <Avatar className="h-8 w-8">
-                          <AvatarImage src={author?.avatar} />
-                          <AvatarFallback>{author?.name.charAt(0) || "?"}</AvatarFallback>
-                        </Avatar>
+                        {displayAvatar ? (
+                          <img 
+                            src={displayAvatar} 
+                            alt={displayName}
+                            className="h-8 w-8 rounded-full object-cover"
+                          />
+                        ) : (
+                          <Avatar className="h-8 w-8">
+                            <AvatarFallback>{displayName?.charAt(0) || "?"}</AvatarFallback>
+                          </Avatar>
+                        )}
                         <div className="flex-1">
                           <div className="flex items-center gap-2 mb-1">
-                            <span className="text-sm font-medium">{author?.name || "Unknown"}</span>
+                            <span className="text-sm font-medium">{displayName}</span>
                             <span className="text-xs text-muted-foreground">
                               {format(new Date(comment.createdAt), "d MMM yyyy HH:mm", { locale })}
                             </span>
@@ -383,7 +531,7 @@ export default function TaskViewPage() {
                             </div>
                           ) : (
                             <div className="flex items-start justify-between">
-                              <p className="text-sm whitespace-pre-wrap">{comment.content}</p>
+                              <p className="text-sm whitespace-pre-wrap">{commentText}</p>
                               {isOwner && (
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild>
@@ -415,41 +563,15 @@ export default function TaskViewPage() {
                         </div>
                       </div>
                     );
-                  })
-                )}
-              </div>
+                  })}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
 
         {/* Sidebar */}
         <div className="space-y-4">
-          {/* Status Card */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                {language === "th" ? "สถานะ" : "Status"}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Select value={task.statusId} onValueChange={handleStatusChange}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {statuses.map((s) => (
-                    <SelectItem key={s.id} value={s.id}>
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: s.color }} />
-                        {s.name}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </CardContent>
-          </Card>
-
           {/* Details Card */}
           <Card>
             <CardHeader className="pb-3">
@@ -458,23 +580,29 @@ export default function TaskViewPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* Assignees */}
+              {/* Assignee - API has single assignee */}
               <div className="space-y-2">
                 <Label className="text-xs text-muted-foreground flex items-center gap-1">
                   <User className="h-3 w-3" />
-                  {language === "th" ? "ผู้รับผิดชอบ" : "Assignees"}
+                  {language === "th" ? "ผู้รับผิดชอบ" : "Assignee"}
                 </Label>
                 <div className="flex flex-wrap gap-2">
-                  {assignees.length > 0 ? (
-                    assignees.map((assignee) => (
-                      <div key={assignee?.id} className="flex items-center gap-2 px-2 py-1 rounded-full bg-muted">
-                        <Avatar className="h-5 w-5">
-                          <AvatarImage src={assignee?.avatar} />
-                          <AvatarFallback className="text-[10px]">{assignee?.name.charAt(0)}</AvatarFallback>
-                        </Avatar>
-                        <span className="text-xs">{assignee?.name}</span>
-                      </div>
-                    ))
+                  {assignee ? (
+                    <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-muted">
+                      <Avatar className="h-5 w-5">
+                        <AvatarImage src={assignee.avatar} />
+                        <AvatarFallback className="text-[10px]">{assignee.name.charAt(0)}</AvatarFallback>
+                      </Avatar>
+                      <span className="text-xs">{assignee.name}</span>
+                    </div>
+                  ) : assigneeName ? (
+                    <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-muted">
+                      <Avatar className="h-5 w-5">
+                        <AvatarImage src={assigneeAvatar || undefined} />
+                        <AvatarFallback className="text-[10px]">{assigneeName.charAt(0)}</AvatarFallback>
+                      </Avatar>
+                      <span className="text-xs">{assigneeName}</span>
+                    </div>
                   ) : (
                     <span className="text-sm text-muted-foreground">-</span>
                   )}
@@ -487,8 +615,8 @@ export default function TaskViewPage() {
                   <Flag className="h-3 w-3" />
                   {language === "th" ? "ความสำคัญ" : "Priority"}
                 </Label>
-                <Badge style={{ backgroundColor: `${priority.color}20`, color: priority.color }}>
-                  {priority.icon} {priority.label}
+                <Badge style={{ backgroundColor: `${priorityColor}20`, color: priorityColor }}>
+                  {priorityValue === "urgent" ? "🔴" : priorityValue === "high" ? "⬆️" : priorityValue === "low" ? "⬇️" : "➖"} {priorityLabel}
                 </Badge>
               </div>
 
@@ -513,93 +641,64 @@ export default function TaskViewPage() {
                 </div>
               )}
 
-              {/* Predecessors */}
-              <div className="space-y-2">
-                <Label className="text-xs text-muted-foreground flex items-center gap-1">
-                  <Link2 className="h-3 w-3" />
-                  {language === "th" ? "งานที่ต้องรอ (Predecessor)" : "Predecessors"}
-                </Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button variant="outline" size="sm" className="w-full justify-start">
-                      {task.predecessorIds && task.predecessorIds.length > 0 
-                        ? `${task.predecessorIds.length} ${language === "th" ? "งาน" : "task(s)"}`
-                        : language === "th" ? "เลือกงานที่ต้องรอ" : "Select predecessors"}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-80" align="start">
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium">
-                        {language === "th" ? "เลือกงานที่ต้องเสร็จก่อน" : "Select tasks that must finish first"}
-                      </p>
-                      <ScrollArea className="h-48">
-                        <div className="space-y-1">
-                          {tasks
-                            .filter((t) => t.id !== task.id && t.listId === task.listId)
-                            .map((t) => {
-                              const isSelected = task.predecessorIds?.includes(t.id);
-                              return (
-                                <div
-                                  key={t.id}
-                                  className="flex items-center gap-2 p-2 rounded hover:bg-muted cursor-pointer"
-                                  onClick={() => {
-                                    const currentPredecessors = task.predecessorIds || [];
-                                    const newPredecessors = isSelected
-                                      ? currentPredecessors.filter((id) => id !== t.id)
-                                      : [...currentPredecessors, t.id];
-                                    updateTask(task.id, { predecessorIds: newPredecessors });
-                                  }}
-                                >
-                                  <Checkbox checked={isSelected} />
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-sm truncate">{t.title}</p>
-                                    <p className="text-xs text-muted-foreground">
-                                      {t.taskId}
-                                    </p>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                        </div>
-                      </ScrollArea>
-                    </div>
-                  </PopoverContent>
-                </Popover>
-                {task.predecessorIds && task.predecessorIds.length > 0 && (
-                  <div className="space-y-1">
-                    {task.predecessorIds.map((predId) => {
-                      const predTask = tasks.find((t) => t.id === predId);
-                      if (!predTask) return null;
-                      const predStatus = statuses.find((s) => s.id === predTask.statusId);
-                      return (
-                        <div
-                          key={predId}
-                          className="flex items-center gap-2 p-2 rounded bg-muted/50 text-sm"
-                        >
-                          <div
-                            className="w-2 h-2 rounded-full flex-shrink-0"
-                            style={{ backgroundColor: predStatus?.color }}
-                          />
-                          <span className="truncate flex-1">{predTask.title}</span>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-5 w-5"
-                            onClick={() => {
-                              const newPredecessors = task.predecessorIds?.filter(
-                                (id) => id !== predId
-                              ) || [];
-                              updateTask(task.id, { predecessorIds: newPredecessors });
-                            }}
-                          >
-                            <X className="h-3 w-3" />
-                          </Button>
-                        </div>
-                      );
-                    })}
+              {/* Time Estimate */}
+              {task.timeEstimateHours && (
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    {language === "th" ? "เวลาประมาณการ" : "Time Estimate"}
+                  </Label>
+                  <span className="text-sm">{task.timeEstimateHours} {language === "th" ? "ชั่วโมง" : "hours"}</span>
+                </div>
+              )}
+
+              {/* Actual Hours */}
+              {task.actualHours > 0 && (
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    {language === "th" ? "เวลาที่ใช้จริง" : "Actual Hours"}
+                  </Label>
+                  <span className="text-sm">{task.actualHours} {language === "th" ? "ชั่วโมง" : "hours"}</span>
+                </div>
+              )}
+
+              {/* Tags */}
+              {task.tags && task.tags.length > 0 && (
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground flex items-center gap-1">
+                    <Tag className="h-3 w-3" />
+                    {language === "th" ? "Tags" : "Tags"}
+                  </Label>
+                  <div className="flex flex-wrap gap-1">
+                    {task.tags.map((tag) => (
+                      <Badge key={tag} variant="secondary" className="text-xs">
+                        {tag}
+                      </Badge>
+                    ))}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
+
+              {/* Blocked Note */}
+              {task.blockedNote && (
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">
+                    {language === "th" ? "เหตุผลที่บล็อก" : "Blocked Note"}
+                  </Label>
+                  <p className="text-sm text-destructive">{task.blockedNote}</p>
+                </div>
+              )}
+
+              {/* Predecessors - API doesn't provide this field */}
+              {false && (
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground flex items-center gap-1">
+                    <Link2 className="h-3 w-3" />
+                    {language === "th" ? "งานที่ต้องรอ (Predecessor)" : "Predecessors"}
+                  </Label>
+                </div>
+              )}
 
               <Separator />
 
@@ -622,16 +721,28 @@ export default function TaskViewPage() {
                       <span>{format(planFinish, "d MMM yyyy", { locale })}</span>
                     </div>
                   )}
-                  {task.duration && (
+                  {task.durationDays && (
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Duration:</span>
-                      <span>{task.duration} {language === "th" ? "วัน" : "days"}</span>
+                      <span>{task.durationDays} {language === "th" ? "วัน" : "days"}</span>
                     </div>
                   )}
-                  {task.dueDate && (
+                  {task.deadline && (
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Due Date:</span>
-                      <span>{format(new Date(task.dueDate), "d MMM yyyy", { locale })}</span>
+                      <span>{format(new Date(task.deadline), "d MMM yyyy", { locale })}</span>
+                    </div>
+                  )}
+                  {task.startedAt && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Started:</span>
+                      <span>{format(new Date(task.startedAt), "d MMM yyyy HH:mm", { locale })}</span>
+                    </div>
+                  )}
+                  {task.completedAt && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Completed:</span>
+                      <span>{format(new Date(task.completedAt), "d MMM yyyy HH:mm", { locale })}</span>
                     </div>
                   )}
                 </div>
@@ -639,39 +750,91 @@ export default function TaskViewPage() {
 
               <Separator />
 
+              {/* Creator */}
+              {task.creatorName && (
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">
+                    {language === "th" ? "ผู้สร้าง" : "Creator"}
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    <Avatar className="h-5 w-5">
+                      <AvatarFallback className="text-[10px]">{task.creatorName.charAt(0)}</AvatarFallback>
+                    </Avatar>
+                    <span className="text-sm">{task.creatorName}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Status - use API statuses for dropdown */}
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">
+                  {language === "th" ? "สถานะ" : "Status"}
+                </Label>
+                {statusesFromApi.length > 0 ? (
+                  <Select 
+                    value={task.listStatusId || (task as any).list_status_id || ""} 
+                    onValueChange={handleStatusChange}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={task.statusName || task.status || "Select status"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {statusesFromApi.map((s) => (
+                        <SelectItem key={s.id} value={s.id}>
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: s.color }} />
+                            {s.name}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    {status && (
+                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: status.color }} />
+                    )}
+                    <span className="text-sm">{status?.name || task.statusName || task.status}</span>
+                  </div>
+                )}
+              </div>
+
+              <Separator />
+
               {/* Meta */}
               <div className="space-y-1 text-xs text-muted-foreground">
-                <div className="flex justify-between">
-                  <span>Created:</span>
-                  <span>{format(new Date(task.createdAt), "d MMM yyyy HH:mm", { locale })}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Updated:</span>
-                  <span>{format(new Date(task.updatedAt), "d MMM yyyy HH:mm", { locale })}</span>
-                </div>
+                {createdAt && (
+                  <div className="flex justify-between">
+                    <span>Created:</span>
+                    <span>{format(new Date(createdAt), "d MMM yyyy HH:mm", { locale })}</span>
+                  </div>
+                )}
+                {updatedAt && (
+                  <div className="flex justify-between">
+                    <span>Updated:</span>
+                    <span>{format(new Date(updatedAt), "d MMM yyyy HH:mm", { locale })}</span>
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
 
-          {/* Attachments */}
-          {task.attachments.length > 0 && (
+          {/* Attachments - API provides count only */}
+          {task.attachmentCount > 0 && (
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
                   <Paperclip className="h-3 w-3" />
                   {language === "th" ? "ไฟล์แนบ" : "Attachments"}
-                  <Badge variant="secondary" className="ml-auto">{task.attachments.length}</Badge>
+                  <Badge variant="secondary" className="ml-auto">{task.attachmentCount}</Badge>
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="space-y-2">
-                  {task.attachments.map((attachment) => (
-                    <div key={attachment.id} className="flex items-center gap-2 p-2 rounded border text-sm">
-                      <Paperclip className="h-4 w-4 text-muted-foreground" />
-                      <span className="truncate flex-1">{attachment.name}</span>
-                    </div>
-                  ))}
-                </div>
+                <p className="text-sm text-muted-foreground">
+                  {language === "th" 
+                    ? `มี ${task.attachmentCount} ไฟล์แนบ` 
+                    : `${task.attachmentCount} attachments`}
+                </p>
               </CardContent>
             </Card>
           )}

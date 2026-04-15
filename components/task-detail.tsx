@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   X,
@@ -28,7 +28,6 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
@@ -60,14 +59,17 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { useTaskStore } from "@/lib/store";
-import { getUserById, getTagByName, users, getListById } from "@/lib/mock-data";
+import { useListTaskStore } from "@/lib/list-task-store";
+import { useWorkspaceStore } from "@/lib/workspace-store";
+import { useAuthStore } from "@/lib/auth-store";
+import { getCachedEmployee } from "@/lib/employee-cache";
+import { getTagByName } from "@/lib/mock-data";
 import {
   priorityConfig,
   storyPointsOptions,
   type Task,
   type Priority,
   type StoryPoints,
-  type Attachment,
 } from "@/lib/types";
 import { format } from "date-fns";
 
@@ -78,130 +80,155 @@ interface TaskDetailProps {
 
 export function TaskDetail({ task, onClose }: TaskDetailProps) {
   const router = useRouter();
-  const { updateTask, deleteTask, taskTypes, spaces, lists } = useTaskStore();
-  
+  const { taskTypes } = useTaskStore();
+  const {
+    updateTask: apiUpdateTask,
+    deleteTask: apiDeleteTask,
+    statuses,
+    loadSubtasks,
+    toggleSubtask,
+    addSubtask,
+    deleteSubtask,
+    loadComments,
+    addComment,
+    updateComment,
+    deleteComment,
+    loadAttachments,
+    uploadAttachment,
+    deleteAttachment,
+  } = useListTaskStore();
+  const { lists } = useWorkspaceStore();
+  const user = useAuthStore((s) => s.user);
+
   // Get space type for task type filtering and assignment restrictions
-  const currentList = lists.find(l => l.id === task.listId);
-  const currentSpace = spaces.find(s => s.id === currentList?.spaceId);
-  const isPrivateSpace = currentSpace?.type === "private";
-  
-  // Filter task types based on space type
-  const filteredTaskTypes = taskTypes.filter(tt => 
-    tt.category === (isPrivateSpace ? "private" : "organization")
-  );
+  const currentList = lists.find((l) => l.id === task.listId);
+  // Space type is not available from the API — always treat as organization space
+  const isPrivateSpace = false;
+
+  // Show all task types (space type not available in real API)
+  const filteredTaskTypes = taskTypes;
+
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description || "");
   const [newSubtask, setNewSubtask] = useState("");
   const [isTimeTracking, setIsTimeTracking] = useState(false);
   const [showAssigneeDialog, setShowAssigneeDialog] = useState(false);
+  const [assigneeSearch, setAssigneeSearch] = useState("");
+  const [employees, setEmployees] = useState<{ id: string; name: string; avatarUrl: string | null }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const list = getListById(task.listId);
-  const assignees = task.assigneeIds.map((id) => getUserById(id)).filter(Boolean);
+  const listName = currentList?.name;
+  const assignees = task.assigneeIds
+    .map((id) => getCachedEmployee(id))
+    .filter(Boolean);
   const priorityInfo = priorityConfig[task.priority];
 
   const completedSubtasks = task.subtasks.filter((s) => s.completed).length;
-  const subtaskProgress = task.subtasks.length > 0 
-    ? (completedSubtasks / task.subtasks.length) * 100 
-    : 0;
+  const subtaskProgress =
+    task.subtasks.length > 0
+      ? (completedSubtasks / task.subtasks.length) * 100
+      : 0;
+
+  // Load real subtasks/comments/attachments on mount (replace stub items)
+  useEffect(() => {
+    if (task.subtasks.some((s) => s.id.startsWith("stub-"))) {
+      loadSubtasks(task.id);
+    }
+    if (task.comments.some((c) => c.id.startsWith("stub-"))) {
+      loadComments(task.id);
+    }
+    if (task.attachments.some((a) => a.id.startsWith("stub-"))) {
+      loadAttachments(task.id);
+    }
+  }, [task.id, loadSubtasks, loadComments, loadAttachments]);
+
+  // Load employees for assignee dialog
+  useEffect(() => {
+    if (showAssigneeDialog && employees.length === 0) {
+      import("@/lib/api/employees").then(({ employeesApi }) => {
+        employeesApi.list({ isActive: true, limit: 200 }).then((res) => {
+          setEmployees(res.rows.map((e) => ({ id: e.id, name: e.name, avatarUrl: e.avatarUrl })));
+        }).catch(() => {});
+      });
+    }
+  }, [showAssigneeDialog, employees.length]);
 
   const handleTitleSave = () => {
     if (title.trim()) {
-      updateTask(task.id, { title: title.trim() });
+      apiUpdateTask(task.id, { title: title.trim() });
     }
     setIsEditingTitle(false);
   };
 
   const handleDescriptionSave = () => {
-    updateTask(task.id, { description });
+    apiUpdateTask(task.id, { description });
   };
 
   const handleStatusChange = (statusId: string) => {
-    updateTask(task.id, { statusId });
+    apiUpdateTask(task.id, { listStatusId: statusId });
   };
 
   const handlePriorityChange = (priority: Priority) => {
-    updateTask(task.id, { priority });
+    apiUpdateTask(task.id, { priority });
   };
 
   const handleStoryPointsChange = (points: string) => {
-    updateTask(task.id, {
-      storyPoints: points ? (parseInt(points) as StoryPoints) : undefined,
+    apiUpdateTask(task.id, {
+      storyPoints: points ? parseInt(points) : null,
     });
   };
 
   const handleDueDateChange = (date: Date | undefined) => {
-    updateTask(task.id, { dueDate: date });
+    apiUpdateTask(task.id, { deadline: date?.toISOString() ?? null });
   };
 
   const handleActualStartChange = (date: Date | undefined) => {
-    updateTask(task.id, { actualStart: date });
+    // actualStart maps to startedAt — not in UpdateTaskPayload directly, kept as local only
+    // No API field for this; skip or extend payload if needed
   };
 
   const handleActualFinishChange = (date: Date | undefined) => {
-    updateTask(task.id, { actualFinish: date });
+    // actualFinish maps to completedAt — not directly settable; skip
   };
 
   const handleToggleSubtask = (subtaskId: string) => {
-    const updatedSubtasks = task.subtasks.map((s) =>
-      s.id === subtaskId ? { ...s, completed: !s.completed } : s
-    );
-    updateTask(task.id, { subtasks: updatedSubtasks });
+    toggleSubtask(task.id, subtaskId);
   };
 
   const handleAddSubtask = () => {
     if (!newSubtask.trim()) return;
-    const newSubtaskItem = {
-      id: `subtask-${Date.now()}`,
-      title: newSubtask.trim(),
-      completed: false,
-    };
-    updateTask(task.id, { subtasks: [...task.subtasks, newSubtaskItem] });
+    addSubtask(task.id, newSubtask.trim());
     setNewSubtask("");
   };
 
   const handleDeleteSubtask = (subtaskId: string) => {
-    const updatedSubtasks = task.subtasks.filter((s) => s.id !== subtaskId);
-    updateTask(task.id, { subtasks: updatedSubtasks });
+    deleteSubtask(task.id, subtaskId);
   };
 
-  const handleDelete = () => {
-    deleteTask(task.id);
+  const handleDelete = async () => {
+    await apiDeleteTask(task.id);
     onClose();
   };
 
   const handleAssigneeToggle = (userId: string) => {
-    const newAssigneeIds = task.assigneeIds.includes(userId)
-      ? task.assigneeIds.filter((id) => id !== userId)
-      : [...task.assigneeIds, userId];
-    updateTask(task.id, { assigneeIds: newAssigneeIds });
+    const newAssigneeId = task.assigneeIds.includes(userId) ? undefined : userId;
+    if (newAssigneeId) {
+      apiUpdateTask(task.id, { assigneeId: newAssigneeId });
+    }
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
-
-    const newAttachments: Attachment[] = Array.from(files).map((file) => ({
-      id: `attachment-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      name: file.name,
-      url: URL.createObjectURL(file),
-      type: file.type,
-      size: file.size,
-      uploadedBy: "user-1",
-      uploadedAt: new Date(),
-    }));
-
-    updateTask(task.id, {
-      attachments: [...task.attachments, ...newAttachments],
+    Array.from(files).forEach((file) => {
+      uploadAttachment(task.id, file);
     });
     e.target.value = "";
   };
 
   const handleRemoveAttachment = (attachmentId: string) => {
-    updateTask(task.id, {
-      attachments: task.attachments.filter((a) => a.id !== attachmentId),
-    });
+    deleteAttachment(task.id, attachmentId);
   };
 
   const formatTimeSpent = (minutes?: number) => {
@@ -220,27 +247,34 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
   };
 
   const handleTimeEstimateChange = (hours: string, minutes: string) => {
-    const totalMinutes = (parseInt(hours || "0") * 60) + parseInt(minutes || "0");
-    updateTask(task.id, { timeEstimate: totalMinutes > 0 ? totalMinutes : undefined });
+    const totalMinutes =
+      parseInt(hours || "0") * 60 + parseInt(minutes || "0");
+    apiUpdateTask(task.id, {
+      timeEstimateHours: totalMinutes > 0 ? totalMinutes / 60 : null,
+    });
   };
 
   const handleTimeSpentChange = (hours: string, minutes: string) => {
-    const totalMinutes = (parseInt(hours || "0") * 60) + parseInt(minutes || "0");
-    updateTask(task.id, { timeSpent: totalMinutes > 0 ? totalMinutes : undefined });
+    // timeSpent (accumulated_minutes) is read-only from API; skip
   };
 
   const toggleTimeTracking = () => {
     if (isTimeTracking) {
-      // Stop tracking - add to time spent
       setIsTimeTracking(false);
     } else {
-      // Start tracking
-      if (!task.actualStart) {
-        updateTask(task.id, { actualStart: new Date() });
-      }
       setIsTimeTracking(true);
     }
   };
+
+  // Use statuses from store; fall back to empty
+  const displayStatuses = statuses.length > 0 ? statuses : [];
+
+  // Filter employees for assignee dialog search
+  const filteredEmployees = assigneeSearch
+    ? employees.filter((e) =>
+        e.name.toLowerCase().includes(assigneeSearch.toLowerCase())
+      )
+    : employees;
 
   return (
     <div className="flex h-full flex-col border-l bg-background">
@@ -248,13 +282,13 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
       <div className="flex items-center justify-between border-b px-4 py-3">
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">
-            {list?.name} / Task
+            {listName} / Task
           </span>
         </div>
         <div className="flex items-center gap-1">
-          <Button 
-            variant="outline" 
-            size="sm" 
+          <Button
+            variant="outline"
+            size="sm"
             className="h-8 text-xs"
             onClick={() => router.push(`/task/${task.id}`)}
           >
@@ -318,7 +352,7 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {list?.statuses.map((status) => (
+                {displayStatuses.map((status) => (
                   <SelectItem key={status.id} value={status.id}>
                     <div className="flex items-center gap-2">
                       <div
@@ -385,24 +419,18 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                   Assignees
                 </p>
                 <div className="flex flex-wrap items-center gap-2">
-                  {assignees.map((user) => (
+                  {assignees.map((emp) => (
                     <div
-                      key={user!.id}
+                      key={emp!.id}
                       className="group flex items-center gap-2 rounded-full bg-muted px-2 py-1"
                     >
                       <Avatar className="h-5 w-5">
-                        <AvatarImage src={user!.avatar} />
+                        <AvatarImage src={emp!.avatar} />
                         <AvatarFallback className="text-[10px]">
-                          {user!.name.charAt(0)}
+                          {emp!.name.charAt(0)}
                         </AvatarFallback>
                       </Avatar>
-                      <span className="text-xs">{user!.name}</span>
-                      <button
-                        onClick={() => handleAssigneeToggle(user!.id)}
-                        className="hidden h-4 w-4 items-center justify-center rounded-full hover:bg-background group-hover:flex"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
+                      <span className="text-xs">{emp!.name}</span>
                     </div>
                   ))}
                   <Button
@@ -433,7 +461,9 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                       className={cn(
                         "h-7 justify-start text-left font-normal",
                         !task.dueDate && "text-muted-foreground",
-                        task.dueDate && new Date(task.dueDate) < new Date() && "border-red-500 text-red-500"
+                        task.dueDate &&
+                          new Date(task.dueDate) < new Date() &&
+                          "border-red-500 text-red-500"
                       )}
                     >
                       <CalendarIcon className="mr-2 h-3 w-3" />
@@ -481,7 +511,11 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                     <PopoverContent className="w-auto p-0" align="start">
                       <CalendarComponent
                         mode="single"
-                        selected={task.actualStart ? new Date(task.actualStart) : undefined}
+                        selected={
+                          task.actualStart
+                            ? new Date(task.actualStart)
+                            : undefined
+                        }
                         onSelect={handleActualStartChange}
                         initialFocus
                       />
@@ -507,7 +541,11 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                     <PopoverContent className="w-auto p-0" align="start">
                       <CalendarComponent
                         mode="single"
-                        selected={task.actualFinish ? new Date(task.actualFinish) : undefined}
+                        selected={
+                          task.actualFinish
+                            ? new Date(task.actualFinish)
+                            : undefined
+                        }
                         onSelect={handleActualFinishChange}
                         initialFocus
                       />
@@ -532,7 +570,11 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                         <Input
                           type="number"
                           min="0"
-                          defaultValue={task.timeEstimate ? Math.floor(task.timeEstimate / 60) : ""}
+                          defaultValue={
+                            task.timeEstimate
+                              ? Math.floor(task.timeEstimate / 60)
+                              : ""
+                          }
                           onChange={(e) =>
                             handleTimeEstimateChange(
                               e.target.value,
@@ -547,10 +589,16 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                           type="number"
                           min="0"
                           max="59"
-                          defaultValue={task.timeEstimate ? (task.timeEstimate % 60) : ""}
+                          defaultValue={
+                            task.timeEstimate
+                              ? task.timeEstimate % 60
+                              : ""
+                          }
                           onChange={(e) =>
                             handleTimeEstimateChange(
-                              Math.floor((task.timeEstimate || 0) / 60).toString(),
+                              Math.floor(
+                                (task.timeEstimate || 0) / 60
+                              ).toString(),
                               e.target.value
                             )
                           }
@@ -564,37 +612,9 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                   <div className="flex items-center gap-4 text-sm">
                     <div className="flex items-center gap-1">
                       <span className="text-muted-foreground">Tracked:</span>
-                      <div className="flex items-center gap-1">
-                        <Input
-                          type="number"
-                          min="0"
-                          defaultValue={task.timeSpent ? Math.floor(task.timeSpent / 60) : ""}
-                          onChange={(e) =>
-                            handleTimeSpentChange(
-                              e.target.value,
-                              ((task.timeSpent || 0) % 60).toString()
-                            )
-                          }
-                          className="h-6 w-12 px-1 text-center text-xs"
-                          placeholder="0"
-                        />
-                        <span className="text-xs text-muted-foreground">h</span>
-                        <Input
-                          type="number"
-                          min="0"
-                          max="59"
-                          defaultValue={task.timeSpent ? (task.timeSpent % 60) : ""}
-                          onChange={(e) =>
-                            handleTimeSpentChange(
-                              Math.floor((task.timeSpent || 0) / 60).toString(),
-                              e.target.value
-                            )
-                          }
-                          className="h-6 w-12 px-1 text-center text-xs"
-                          placeholder="0"
-                        />
-                        <span className="text-xs text-muted-foreground">m</span>
-                      </div>
+                      <span className="text-xs font-medium">
+                        {formatTimeSpent(task.timeSpent)}
+                      </span>
                     </div>
                     <Button
                       variant={isTimeTracking ? "destructive" : "outline"}
@@ -619,7 +639,10 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                     <Progress
                       value={
                         task.timeSpent
-                          ? Math.min((task.timeSpent / task.timeEstimate) * 100, 100)
+                          ? Math.min(
+                              (task.timeSpent / task.timeEstimate) * 100,
+                              100
+                            )
                           : 0
                       }
                       className="h-1.5"
@@ -707,23 +730,27 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                     checked={subtask.completed}
                     onCheckedChange={() => handleToggleSubtask(subtask.id)}
                     className="h-4 w-4"
+                    disabled={subtask.id.startsWith("stub-")}
                   />
                   <span
                     className={cn(
                       "flex-1 text-sm",
-                      subtask.completed && "text-muted-foreground line-through"
+                      subtask.completed &&
+                        "text-muted-foreground line-through"
                     )}
                   >
-                    {subtask.title}
+                    {subtask.title || (subtask.id.startsWith("stub-") ? "Loading..." : "")}
                   </span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 opacity-0 group-hover:opacity-100"
-                    onClick={() => handleDeleteSubtask(subtask.id)}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
+                  {!subtask.id.startsWith("stub-") && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 opacity-0 group-hover:opacity-100"
+                      onClick={() => handleDeleteSubtask(subtask.id)}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  )}
                 </div>
               ))}
 
@@ -738,6 +765,64 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                   className="h-8 flex-1"
                 />
               </div>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Comments */}
+          <div>
+            <div className="mb-2 flex items-center gap-2">
+              <MessageSquare className="h-4 w-4 text-muted-foreground" />
+              <p className="text-xs font-medium text-muted-foreground">
+                Comments ({task.comments.filter((c) => !c.id.startsWith("stub-")).length || task.comments.length})
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              {task.comments
+                .filter((c) => !c.id.startsWith("stub-"))
+                .map((comment) => {
+                  const author = getCachedEmployee(comment.authorId);
+                  const canEdit = user?.userId === comment.authorId;
+                  return (
+                    <div key={comment.id} className="flex gap-2">
+                      <Avatar className="h-7 w-7 shrink-0">
+                        <AvatarImage src={author?.avatar} />
+                        <AvatarFallback className="text-[10px]">
+                          {author?.name?.charAt(0) ?? "?"}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="flex-1 rounded-lg bg-muted px-3 py-2">
+                        <div className="mb-1 flex items-center justify-between">
+                          <span className="text-xs font-medium">
+                            {author?.name ?? "Unknown"}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {format(new Date(comment.createdAt), "MMM d")}
+                          </span>
+                        </div>
+                        <p className="text-sm">{comment.content}</p>
+                        {canEdit && (
+                          <div className="mt-1 flex gap-2">
+                            <button
+                              className="text-xs text-muted-foreground hover:text-foreground"
+                              onClick={() => deleteComment(task.id, comment.id)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+              {/* Add Comment */}
+              <AddCommentForm
+                onSubmit={(text) => addComment(task.id, text)}
+                currentUser={user}
+              />
             </div>
           </div>
 
@@ -771,43 +856,45 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
             </div>
 
             <div className="space-y-2">
-              {task.attachments.map((attachment) => (
-                <div
-                  key={attachment.id}
-                  className="group flex items-center justify-between rounded-lg border bg-muted/50 p-2"
-                >
-                  <div className="flex items-center gap-2">
-                    <FileIcon className="h-4 w-4 text-muted-foreground" />
-                    <div>
-                      <p className="text-sm font-medium">{attachment.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatFileSize(attachment.size)}
-                      </p>
+              {task.attachments
+                .filter((a) => !a.id.startsWith("stub-"))
+                .map((attachment) => (
+                  <div
+                    key={attachment.id}
+                    className="group flex items-center justify-between rounded-lg border bg-muted/50 p-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      <FileIcon className="h-4 w-4 text-muted-foreground" />
+                      <div>
+                        <p className="text-sm font-medium">{attachment.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatFileSize(attachment.size)}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        asChild
+                      >
+                        <a href={attachment.url} download={attachment.name}>
+                          <Download className="h-3 w-3" />
+                        </a>
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 opacity-0 group-hover:opacity-100"
+                        onClick={() => handleRemoveAttachment(attachment.id)}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      asChild
-                    >
-                      <a href={attachment.url} download={attachment.name}>
-                        <Download className="h-3 w-3" />
-                      </a>
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 opacity-0 group-hover:opacity-100"
-                      onClick={() => handleRemoveAttachment(attachment.id)}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
-              {task.attachments.length === 0 && (
+                ))}
+              {task.attachments.filter((a) => !a.id.startsWith("stub-")).length === 0 && (
                 <p className="text-sm text-muted-foreground">No attachments</p>
               )}
             </div>
@@ -818,12 +905,8 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
       {/* Footer */}
       <div className="border-t px-4 py-3">
         <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>
-            Created {format(new Date(task.createdAt), "MMM d, yyyy")}
-          </span>
-          <span>
-            Updated {format(new Date(task.updatedAt), "MMM d, yyyy")}
-          </span>
+          <span>Created {format(new Date(task.createdAt), "MMM d, yyyy")}</span>
+          <span>Updated {format(new Date(task.updatedAt), "MMM d, yyyy")}</span>
         </div>
       </div>
 
@@ -833,7 +916,7 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
           <DialogHeader>
             <DialogTitle>Manage Assignees</DialogTitle>
             <DialogDescription>
-              {isPrivateSpace 
+              {isPrivateSpace
                 ? "Private tasks cannot be assigned to other team members."
                 : "Select team members to assign to this task."}
             </DialogDescription>
@@ -844,31 +927,45 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                 <p>This is a private task and can only be assigned to yourself.</p>
               </div>
             ) : (
-              users.map((user) => {
-                const isSelected = task.assigneeIds.includes(user.id);
-                return (
-                  <div
-                    key={user.id}
-                    onClick={() => handleAssigneeToggle(user.id)}
-                    className={cn(
-                      "flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors",
-                      isSelected
-                        ? "border-primary bg-primary/10"
-                        : "border-border hover:bg-muted"
-                    )}
-                  >
-                    <Checkbox checked={isSelected} />
-                    <Avatar className="h-8 w-8">
-                      <AvatarImage src={user.avatar} />
-                      <AvatarFallback>{user.name.charAt(0)}</AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium">{user.name}</p>
-                      <p className="text-xs text-muted-foreground">{user.email}</p>
-                    </div>
-                  </div>
-                );
-              })
+              <>
+                <Input
+                  placeholder="Search employees..."
+                  value={assigneeSearch}
+                  onChange={(e) => setAssigneeSearch(e.target.value)}
+                  className="mb-2"
+                />
+                <div className="max-h-64 overflow-y-auto space-y-2">
+                  {filteredEmployees.map((emp) => {
+                    const isSelected = task.assigneeIds.includes(emp.id);
+                    return (
+                      <div
+                        key={emp.id}
+                        onClick={() => handleAssigneeToggle(emp.id)}
+                        className={cn(
+                          "flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors",
+                          isSelected
+                            ? "border-primary bg-primary/10"
+                            : "border-border hover:bg-muted"
+                        )}
+                      >
+                        <Checkbox checked={isSelected} />
+                        <Avatar className="h-8 w-8">
+                          <AvatarImage src={emp.avatarUrl ?? undefined} />
+                          <AvatarFallback>{emp.name.charAt(0)}</AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1">
+                          <p className="text-sm font-medium">{emp.name}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {employees.length === 0 && (
+                    <p className="text-center text-sm text-muted-foreground py-4">
+                      Loading employees...
+                    </p>
+                  )}
+                </div>
+              </>
             )}
           </div>
           <DialogFooter>
@@ -876,6 +973,45 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+// Inline comment form component
+function AddCommentForm({
+  onSubmit,
+  currentUser,
+}: {
+  onSubmit: (text: string) => void;
+  currentUser: { userId: string; name: string } | null;
+}) {
+  const [text, setText] = useState("");
+
+  const handleSubmit = () => {
+    if (!text.trim()) return;
+    onSubmit(text.trim());
+    setText("");
+  };
+
+  return (
+    <div className="flex gap-2">
+      <Avatar className="h-7 w-7 shrink-0">
+        <AvatarFallback className="text-[10px]">
+          {currentUser?.name?.charAt(0) ?? "?"}
+        </AvatarFallback>
+      </Avatar>
+      <div className="flex flex-1 gap-2">
+        <Input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSubmit()}
+          placeholder="Add a comment..."
+          className="h-8 flex-1"
+        />
+        <Button size="sm" className="h-8" onClick={handleSubmit} disabled={!text.trim()}>
+          Send
+        </Button>
+      </div>
     </div>
   );
 }

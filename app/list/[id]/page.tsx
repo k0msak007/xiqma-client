@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, use } from "react";
+import { useState, useMemo, use, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   LayoutList,
@@ -41,13 +41,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { TaskCard } from "@/components/task-card";
 import { TaskDetail } from "@/components/task-detail";
 import { KanbanBoard } from "@/components/kanban-board";
 import { AddTaskDialog } from "@/components/add-task-dialog";
+import { AddStatusDialog } from "@/components/add-status-dialog";
 import { TaskTableRow } from "@/components/task-table-row";
 import { useTaskStore } from "@/lib/store";
-import { getListById, users } from "@/lib/mock-data";
+import { useListTaskStore } from "@/lib/list-task-store";
+import { useWorkspaceStore } from "@/lib/workspace-store";
+import { getCachedEmployee } from "@/lib/employee-cache";
 import type { ViewType, Priority } from "@/lib/types";
 import type { Task } from "@/lib/types";
 
@@ -62,7 +64,10 @@ export default function ListPage({ params }: PageProps) {
   const searchParams = useSearchParams();
   const selectedTaskId = searchParams.get("task");
 
-  const { tasks, navigation, setActiveView, setActiveTask, statuses: globalStatuses } = useTaskStore();
+  const { navigation, setActiveView, setActiveTask } = useTaskStore();
+  const { tasks, statuses, loading, loadListTasks } = useListTaskStore();
+  const { lists } = useWorkspaceStore();
+
   const [searchQuery, setSearchQuery] = useState("");
   const [filterPriority, setFilterPriority] = useState<Priority | "all">("all");
   const [filterStatus, setFilterStatus] = useState<string>("all");
@@ -72,13 +77,19 @@ export default function ListPage({ params }: PageProps) {
   const [sortBy, setSortBy] = useState<"created" | "due" | "priority" | "planStart">("created");
   const [groupBy, setGroupBy] = useState<GroupByOption>("none");
   const [showAddTaskDialog, setShowAddTaskDialog] = useState(false);
+  const [showAddStatusDialog, setShowAddStatusDialog] = useState(false);
+  const [addTaskStatusId, setAddTaskStatusId] = useState<string | null>(null);
 
-  const list = getListById(id);
+  const list = lists.find((l) => l.id === id);
   const view = navigation.activeView;
 
-  // Filter and sort tasks
+  useEffect(() => {
+    loadListTasks(id);
+  }, [id, loadListTasks]);
+
+  // Filter and sort tasks (already filtered for this listId by the store)
   const listTasks = useMemo(() => {
-    let filtered = tasks.filter((t) => t.listId === id);
+    let filtered = [...tasks];
 
     // Search filter
     if (searchQuery) {
@@ -136,7 +147,7 @@ export default function ListPage({ params }: PageProps) {
           return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       }
     });
-  }, [tasks, id, searchQuery, filterStatus, filterPriority, filterAssignee, planStartFrom, planStartTo, sortBy]);
+  }, [tasks, searchQuery, filterStatus, filterPriority, filterAssignee, planStartFrom, planStartTo, sortBy]);
 
   // Group tasks based on groupBy option
   const groupedTasks = useMemo(() => {
@@ -151,7 +162,7 @@ export default function ListPage({ params }: PageProps) {
 
       switch (groupBy) {
         case "status": {
-          const status = globalStatuses.find((s) => s.id === task.statusId);
+          const status = statuses.find((s) => s.id === task.statusId);
           groupKey = status?.name || "No Status";
           break;
         }
@@ -162,8 +173,8 @@ export default function ListPage({ params }: PageProps) {
           if (task.assigneeIds.length === 0) {
             groupKey = "Unassigned";
           } else {
-            const assignee = users.find((u) => u.id === task.assigneeIds[0]);
-            groupKey = assignee?.name || "Unknown";
+            const emp = getCachedEmployee(task.assigneeIds[0]);
+            groupKey = emp?.name || "Unknown";
           }
           break;
         }
@@ -178,16 +189,23 @@ export default function ListPage({ params }: PageProps) {
     });
 
     return grouped;
-  }, [listTasks, groupBy, globalStatuses]);
+  }, [listTasks, groupBy, statuses]);
 
-  // Get assignees in this list's tasks
+  // Get assignees from tasks using employee cache
   const listAssignees = useMemo(() => {
-    const assigneeIds = new Set<string>();
-    listTasks.forEach((task) => {
-      task.assigneeIds.forEach((id) => assigneeIds.add(id));
+    const seen = new Set<string>();
+    const result: { id: string; name: string }[] = [];
+    tasks.forEach((t) => {
+      t.assigneeIds.forEach((assigneeId) => {
+        if (!seen.has(assigneeId)) {
+          seen.add(assigneeId);
+          const emp = getCachedEmployee(assigneeId);
+          if (emp) result.push({ id: assigneeId, name: emp.name });
+        }
+      });
     });
-    return users.filter((u) => assigneeIds.has(u.id));
-  }, [listTasks]);
+    return result;
+  }, [tasks]);
 
   const clearFilters = () => {
     setSearchQuery("");
@@ -204,7 +222,7 @@ export default function ListPage({ params }: PageProps) {
     ? tasks.find((t) => t.id === selectedTaskId)
     : null;
 
-  if (!list) {
+  if (!list && !loading) {
     return (
       <div className="flex h-full items-center justify-center">
         <p className="text-muted-foreground">List not found</p>
@@ -220,7 +238,7 @@ export default function ListPage({ params }: PageProps) {
         <div className="border-b px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <h1 className="text-xl font-semibold">{list.name}</h1>
+              <h1 className="text-xl font-semibold">{list?.name ?? "Loading..."}</h1>
               <Badge variant="secondary" className="font-normal">
                 {listTasks.length} tasks
               </Badge>
@@ -302,7 +320,7 @@ export default function ListPage({ params }: PageProps) {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Status</SelectItem>
-                {globalStatuses.map((status) => (
+                {statuses.map((status) => (
                   <SelectItem key={status.id} value={status.id}>
                     <div className="flex items-center gap-2">
                       <div
@@ -340,9 +358,9 @@ export default function ListPage({ params }: PageProps) {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All People</SelectItem>
-                {listAssignees.map((user) => (
-                  <SelectItem key={user.id} value={user.id}>
-                    {user.name}
+                {listAssignees.map((assignee) => (
+                  <SelectItem key={assignee.id} value={assignee.id}>
+                    {assignee.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -426,19 +444,22 @@ export default function ListPage({ params }: PageProps) {
 
         {/* Content */}
         <div className="flex-1 overflow-auto">
-          {view === "calendar" ? (
-            <CalendarView
-              tasks={listTasks}
-              statuses={globalStatuses}
-              onTaskClick={(taskId) => setActiveTask(taskId)}
-            />
+          {loading && tasks.length === 0 ? (
+            <div className="flex h-full items-center justify-center">
+              <p className="text-muted-foreground">กำลังโหลด...</p>
+            </div>
           ) : view === "board" ? (
             <KanbanBoard
               listId={id}
-              statuses={globalStatuses}
+              statuses={statuses}
               tasks={listTasks}
               onTaskClick={(taskId) => setActiveTask(taskId)}
               selectedTaskId={selectedTaskId || undefined}
+              onAddTask={(statusId) => {
+                setAddTaskStatusId(statusId);
+                setShowAddTaskDialog(true);
+              }}
+              onAddStatus={() => setShowAddStatusDialog(true)}
             />
           ) : (
             <div className="p-4">
@@ -484,7 +505,7 @@ export default function ListPage({ params }: PageProps) {
                                 task={task}
                                 onClick={() => setActiveTask(task.id)}
                                 isSelected={task.id === selectedTaskId}
-                                statuses={globalStatuses}
+                                statuses={statuses}
                               />
                             ))}
                           </tbody>
@@ -520,8 +541,23 @@ export default function ListPage({ params }: PageProps) {
       {/* Add Task Dialog */}
       <AddTaskDialog
         open={showAddTaskDialog}
-        onOpenChange={setShowAddTaskDialog}
+        onOpenChange={(open) => {
+          setShowAddTaskDialog(open);
+          if (!open) setAddTaskStatusId(null);
+        }}
         listId={id}
+        defaultStatusId={addTaskStatusId || undefined}
+        onSuccess={() => loadListTasks(id)}
+      />
+
+      {/* Add Status Dialog */}
+      <AddStatusDialog
+        open={showAddStatusDialog}
+        onOpenChange={setShowAddStatusDialog}
+        listId={id}
+        onSuccess={(status) => {
+          console.log("New status created:", status);
+        }}
       />
     </div>
   );

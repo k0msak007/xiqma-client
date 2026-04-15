@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   LayoutList,
@@ -37,11 +37,11 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TaskDetail } from "@/components/task-detail";
 import { TaskTableRow } from "@/components/task-table-row";
 import { useTaskStore } from "@/lib/store";
-import { users, getListById } from "@/lib/mock-data";
-import type { Priority, Status } from "@/lib/types";
-
-// Current user ID (in a real app, this would come from auth)
-const CURRENT_USER_ID = "user-1";
+import { useWorkspaceStore } from "@/lib/workspace-store";
+import { tasksApi, type MyTasksRow } from "@/lib/api/tasks";
+import { useAuthStore } from "@/lib/auth-store";
+import { cacheEmployee } from "@/lib/employee-cache";
+import type { Priority, Status, Task } from "@/lib/types";
 
 type GroupByOption = "none" | "status" | "priority" | "dueDate" | "list";
 
@@ -49,7 +49,12 @@ export default function MyTasksPage() {
   const searchParams = useSearchParams();
   const selectedTaskId = searchParams.get("task");
 
-  const { tasks, setActiveTask } = useTaskStore();
+  const { setActiveTask } = useTaskStore();
+  const { lists } = useWorkspaceStore();
+  const user = useAuthStore((s) => s.user);
+
+  const [apiTasks, setApiTasks] = useState<MyTasksRow[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [filterPriority, setFilterPriority] = useState<Priority | "all">("all");
@@ -58,11 +63,102 @@ export default function MyTasksPage() {
   const [sortBy, setSortBy] = useState<"created" | "due" | "priority" | "planStart">("due");
   const [groupBy, setGroupBy] = useState<GroupByOption>("status");
 
-  // Get my tasks (assigned to current user)
-  const myTasks = useMemo(() => {
-    let filtered = tasks.filter((t) => t.assigneeIds.includes(CURRENT_USER_ID));
+  // Load my tasks from API
+  useEffect(() => {
+    setLoading(true);
+    tasksApi
+      .myTasks()
+      .then((rows) => {
+        rows.forEach((r) => {
+          if (r.assignee_id && r.assignee_name) {
+            cacheEmployee({
+              id: r.assignee_id,
+              name: r.assignee_name,
+              avatarUrl: r.assignee_avatar,
+            });
+          }
+        });
+        setApiTasks(rows);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
 
-    // Search filter
+  // Convert API rows to FE Task type
+  const myTasksRaw = useMemo((): Task[] => {
+    return apiTasks.map((row) => ({
+      id: row.id,
+      taskId: row.display_id || "",
+      title: row.title,
+      statusId: row.list_status_id ?? "",
+      priority: row.priority as Priority,
+      assigneeIds: row.assignee_id ? [row.assignee_id] : [],
+      creatorId: row.creator_id,
+      listId: row.list_id,
+      dueDate: row.deadline ? new Date(row.deadline) : undefined,
+      planStart: row.plan_start ? new Date(row.plan_start) : undefined,
+      duration: row.duration_days ? Number(row.duration_days) : undefined,
+      actualStart: row.started_at ? new Date(row.started_at) : undefined,
+      storyPoints: row.story_points
+        ? (Number(row.story_points) as any)
+        : undefined,
+      timeEstimate: row.time_estimate_hours
+        ? Math.round(Number(row.time_estimate_hours) * 60)
+        : undefined,
+      timeSpent: row.accumulated_minutes
+        ? Number(row.accumulated_minutes)
+        : undefined,
+      tags: row.tags || [],
+      subtasks: Array.from(
+        { length: Number(row.subtask_count || 0) },
+        (_, i) => ({ id: `stub-${i}`, title: "", completed: false })
+      ),
+      comments: Array.from(
+        { length: Number(row.comment_count || 0) },
+        (_, i) => ({
+          id: `stub-${i}`,
+          content: "",
+          authorId: "",
+          createdAt: new Date(),
+        })
+      ),
+      attachments: Array.from(
+        { length: Number(row.attachment_count || 0) },
+        (_, i) => ({
+          id: `stub-${i}`,
+          name: "",
+          url: "",
+          type: "",
+          size: 0,
+          uploadedBy: "",
+          uploadedAt: new Date(),
+        })
+      ),
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+      order: Number(row.display_order) || 0,
+    }));
+  }, [apiTasks]);
+
+  // Build status list from task data
+  const allStatuses = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; color: string }>();
+    apiTasks.forEach((t) => {
+      if (t.list_status_id && t.status_name) {
+        map.set(t.list_status_id, {
+          id: t.list_status_id,
+          name: t.status_name,
+          color: t.status_color || "#6b7280",
+        });
+      }
+    });
+    return Array.from(map.values());
+  }, [apiTasks]);
+
+  // Filter and sort tasks
+  const myTasks = useMemo(() => {
+    let filtered = [...myTasksRaw];
+
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(
@@ -73,17 +169,14 @@ export default function MyTasksPage() {
       );
     }
 
-    // Status filter
     if (filterStatus !== "all") {
       filtered = filtered.filter((t) => t.statusId === filterStatus);
     }
 
-    // Priority filter
     if (filterPriority !== "all") {
       filtered = filtered.filter((t) => t.priority === filterPriority);
     }
 
-    // Plan date range filter
     if (planStartFrom || planStartTo) {
       filtered = filtered.filter((t) => {
         if (!t.planStart) return false;
@@ -94,7 +187,6 @@ export default function MyTasksPage() {
       });
     }
 
-    // Sort
     return filtered.sort((a, b) => {
       switch (sortBy) {
         case "due":
@@ -108,25 +200,14 @@ export default function MyTasksPage() {
         case "planStart":
           if (!a.planStart) return 1;
           if (!b.planStart) return -1;
-          return new Date(a.planStart).getTime() - new Date(b.planStart).getTime();
+          return (
+            new Date(a.planStart).getTime() - new Date(b.planStart).getTime()
+          );
         default:
           return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       }
     });
-  }, [tasks, searchQuery, filterStatus, filterPriority, planStartFrom, planStartTo, sortBy]);
-
-  // Get unique statuses from all tasks
-  const allStatuses = useMemo(() => {
-    const statusMap = new Map<string, Status>();
-    myTasks.forEach((task) => {
-      const list = getListById(task.listId);
-      const status = list?.statuses.find((s) => s.id === task.statusId);
-      if (status && !statusMap.has(status.id)) {
-        statusMap.set(status.id, status);
-      }
-    });
-    return Array.from(statusMap.values());
-  }, [myTasks]);
+  }, [myTasksRaw, searchQuery, filterStatus, filterPriority, planStartFrom, planStartTo, sortBy]);
 
   // Group tasks
   const groupedTasks = useMemo(() => {
@@ -138,16 +219,15 @@ export default function MyTasksPage() {
 
     myTasks.forEach((task) => {
       let groupKey: string;
+      const row = apiTasks.find((r) => r.id === task.id);
 
       switch (groupBy) {
-        case "status": {
-          const list = getListById(task.listId);
-          const status = list?.statuses.find((s) => s.id === task.statusId);
-          groupKey = status?.name || "No Status";
+        case "status":
+          groupKey = row?.status_name || "No Status";
           break;
-        }
         case "priority":
-          groupKey = task.priority.charAt(0).toUpperCase() + task.priority.slice(1);
+          groupKey =
+            task.priority.charAt(0).toUpperCase() + task.priority.slice(1);
           break;
         case "dueDate":
           if (!task.dueDate) {
@@ -155,7 +235,9 @@ export default function MyTasksPage() {
           } else {
             const today = new Date();
             const dueDate = new Date(task.dueDate);
-            const diffDays = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+            const diffDays = Math.ceil(
+              (dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+            );
             if (diffDays < 0) groupKey = "Overdue";
             else if (diffDays === 0) groupKey = "Today";
             else if (diffDays <= 7) groupKey = "This Week";
@@ -164,8 +246,8 @@ export default function MyTasksPage() {
           }
           break;
         case "list": {
-          const list = getListById(task.listId);
-          groupKey = list?.name || "Unknown List";
+          const listItem = lists.find((l) => l.id === task.listId);
+          groupKey = listItem?.name || task.listId;
           break;
         }
         default:
@@ -179,31 +261,45 @@ export default function MyTasksPage() {
     });
 
     return grouped;
-  }, [myTasks, groupBy]);
+  }, [myTasks, groupBy, apiTasks, lists]);
 
   const selectedTask = selectedTaskId
-    ? tasks.find((t) => t.id === selectedTaskId)
+    ? myTasksRaw.find((t) => t.id === selectedTaskId)
     : null;
 
-  // Get status for table row (from first task's list)
-  const getStatusesForTask = (taskListId: string) => {
-    const list = getListById(taskListId);
-    return list?.statuses || [];
+  // Get statuses for a specific task (from the tasks' own status data)
+  const getStatusesForTask = (taskListId: string): Status[] => {
+    const taskStatuses = apiTasks
+      .filter((r) => r.list_id === taskListId && r.list_status_id && r.status_name)
+      .map((r) => ({
+        id: r.list_status_id!,
+        name: r.status_name!,
+        color: r.status_color || "#6b7280",
+        order: 0,
+        type: r.status_type || "open",
+        pointCountType: "not_counted" as const,
+      }));
+    // Deduplicate
+    const seen = new Set<string>();
+    return taskStatuses.filter((s) => {
+      if (seen.has(s.id)) return false;
+      seen.add(s.id);
+      return true;
+    });
   };
 
   // Stats
   const stats = useMemo(() => {
-    const total = myTasks.length;
-    const completed = myTasks.filter((t) => t.statusId === "status-4").length;
-    const inProgress = myTasks.filter((t) => t.statusId === "status-2").length;
-    const overdue = myTasks.filter((t) => {
-      if (!t.dueDate) return false;
-      return new Date(t.dueDate) < new Date() && t.statusId !== "status-4";
-    }).length;
-    return { total, completed, inProgress, overdue };
-  }, [myTasks]);
-
-  const currentUser = users.find((u) => u.id === CURRENT_USER_ID);
+    const completed = apiTasks.filter((t) => t.status === "completed").length;
+    const inProgress = apiTasks.filter((t) => t.status === "in_progress").length;
+    const overdue = apiTasks.filter(
+      (t) =>
+        t.deadline &&
+        new Date(t.deadline) < new Date() &&
+        t.status !== "completed"
+    ).length;
+    return { completed, inProgress, overdue };
+  }, [apiTasks]);
 
   const clearFilters = () => {
     setSearchQuery("");
@@ -213,7 +309,11 @@ export default function MyTasksPage() {
     setPlanStartTo(undefined);
   };
 
-  const hasActiveFilters = filterStatus !== "all" || filterPriority !== "all" || planStartFrom || planStartTo;
+  const hasActiveFilters =
+    filterStatus !== "all" ||
+    filterPriority !== "all" ||
+    planStartFrom ||
+    planStartTo;
 
   return (
     <div className="flex h-full">
@@ -227,7 +327,7 @@ export default function MyTasksPage() {
               <div>
                 <h1 className="text-xl font-semibold">My Tasks</h1>
                 <p className="text-sm text-muted-foreground">
-                  Tasks assigned to {currentUser?.name || "you"}
+                  Tasks assigned to {user?.name || "you"}
                 </p>
               </div>
             </div>
@@ -245,7 +345,9 @@ export default function MyTasksPage() {
               {stats.overdue > 0 && (
                 <div className="flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-1.5">
                   <AlertCircle className="h-4 w-4 text-red-500" />
-                  <span className="text-sm text-red-500">{stats.overdue} overdue</span>
+                  <span className="text-sm text-red-500">
+                    {stats.overdue} overdue
+                  </span>
                 </div>
               )}
             </div>
@@ -265,7 +367,10 @@ export default function MyTasksPage() {
             </div>
 
             {/* Group By */}
-            <Select value={groupBy} onValueChange={(v) => setGroupBy(v as GroupByOption)}>
+            <Select
+              value={groupBy}
+              onValueChange={(v) => setGroupBy(v as GroupByOption)}
+            >
               <SelectTrigger className="h-8 w-[130px]">
                 <Users className="mr-1.5 h-3.5 w-3.5" />
                 <SelectValue placeholder="Group By" />
@@ -331,7 +436,10 @@ export default function MyTasksPage() {
                   <CalendarIcon className="mr-1.5 h-3.5 w-3.5" />
                   {planStartFrom || planStartTo ? (
                     <span className="text-xs">
-                      {planStartFrom ? format(planStartFrom, "MMM d") : "Start"} -{" "}
+                      {planStartFrom
+                        ? format(planStartFrom, "MMM d")
+                        : "Start"}{" "}
+                      -{" "}
                       {planStartTo ? format(planStartTo, "MMM d") : "End"}
                     </span>
                   ) : (
@@ -402,7 +510,11 @@ export default function MyTasksPage() {
 
         {/* Content */}
         <div className="flex-1 overflow-auto p-4">
-          {myTasks.length > 0 ? (
+          {loading ? (
+            <div className="flex h-full items-center justify-center">
+              <p className="text-muted-foreground">กำลังโหลด...</p>
+            </div>
+          ) : myTasks.length > 0 ? (
             <div className="space-y-6">
               {Object.entries(groupedTasks).map(([groupName, groupTasks]) => (
                 <div key={groupName}>
@@ -456,7 +568,9 @@ export default function MyTasksPage() {
           ) : (
             <div className="flex flex-col items-center justify-center py-12">
               <CheckCircle2 className="h-12 w-12 text-muted-foreground/50" />
-              <p className="mt-4 text-muted-foreground">No tasks assigned to you</p>
+              <p className="mt-4 text-muted-foreground">
+                No tasks assigned to you
+              </p>
               <p className="text-sm text-muted-foreground">
                 Tasks assigned to you will appear here
               </p>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
 import { Search, Filter, X, FileText, Users, FolderKanban } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -8,75 +8,67 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Checkbox } from "@/components/ui/checkbox";
-import { TaskCard } from "@/components/task-card";
-import { useTaskStore } from "@/lib/store";
-import { users, spaces, lists, getUserById, getListById } from "@/lib/mock-data";
+import { searchApi, type SearchResult } from "@/lib/api/search";
 import { priorityConfig } from "@/lib/types";
 
 type SearchTab = "all" | "tasks" | "spaces" | "people";
 
 export default function SearchPage() {
-  const { tasks, setActiveTask } = useTaskStore();
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState<SearchTab>("all");
   const [selectedPriorities, setSelectedPriorities] = useState<string[]>([]);
-  const [selectedStatuses, setSelectedStatuses] = useState<string[]>([]);
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
 
-  // Search results
-  const searchResults = useMemo(() => {
-    if (!query.trim()) {
-      return { tasks: [], spaces: [], people: [], lists: [] };
+  // Debounced search
+  useEffect(() => {
+    if (query.length < 2) {
+      setResults([]);
+      return;
     }
 
-    const lowerQuery = query.toLowerCase();
+    const timer = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const activeTypes =
+          activeTab === "all"
+            ? undefined
+            : activeTab === "tasks"
+            ? "task"
+            : activeTab === "spaces"
+            ? "space"
+            : "employee";
+        const res = await searchApi.search(query, activeTypes, 30);
+        setResults(res);
+      } catch {
+        /* silent */
+      } finally {
+        setSearching(false);
+      }
+    }, 400);
 
-    const filteredTasks = tasks.filter((task) => {
-      const matchesQuery =
-        task.title.toLowerCase().includes(lowerQuery) ||
-        task.description?.toLowerCase().includes(lowerQuery) ||
-        task.tags.some((tag) => tag.toLowerCase().includes(lowerQuery));
+    return () => clearTimeout(timer);
+  }, [query, activeTab]);
 
-      const matchesPriority =
-        selectedPriorities.length === 0 ||
-        selectedPriorities.includes(task.priority);
-
-      const matchesStatus =
-        selectedStatuses.length === 0 ||
-        selectedStatuses.includes(task.statusId);
-
-      return matchesQuery && matchesPriority && matchesStatus;
-    });
-
-    const filteredSpaces = spaces.filter(
-      (space) =>
-        space.name.toLowerCase().includes(lowerQuery)
-    );
-
-    const filteredPeople = users.filter(
-      (user) =>
-        user.name.toLowerCase().includes(lowerQuery) ||
-        user.email.toLowerCase().includes(lowerQuery)
-    );
-
-    const filteredLists = lists.filter(
-      (list) =>
-        list.name.toLowerCase().includes(lowerQuery)
-    );
-
-    return {
-      tasks: filteredTasks,
-      spaces: filteredSpaces,
-      people: filteredPeople,
-      lists: filteredLists,
-    };
-  }, [query, tasks, selectedPriorities, selectedStatuses]);
+  // Derive typed result groups
+  const searchResults = useMemo(
+    () => ({
+      tasks: results.filter(
+        (r) =>
+          r.type === "task" &&
+          (selectedPriorities.length === 0 ||
+            (r.priority && selectedPriorities.includes(r.priority)))
+      ),
+      spaces: results.filter((r) => r.type === "space"),
+      people: results.filter((r) => r.type === "employee"),
+    }),
+    [results, selectedPriorities]
+  );
 
   const totalResults =
     searchResults.tasks.length +
     searchResults.spaces.length +
-    searchResults.people.length +
-    searchResults.lists.length;
+    searchResults.people.length;
 
   const togglePriority = (priority: string) => {
     setSelectedPriorities((prev) =>
@@ -88,7 +80,6 @@ export default function SearchPage() {
 
   const clearFilters = () => {
     setSelectedPriorities([]);
-    setSelectedStatuses([]);
   };
 
   return (
@@ -142,7 +133,7 @@ export default function SearchPage() {
             </Badge>
           ))}
         </div>
-        {(selectedPriorities.length > 0 || selectedStatuses.length > 0) && (
+        {selectedPriorities.length > 0 && (
           <Button
             variant="ghost"
             size="sm"
@@ -155,10 +146,12 @@ export default function SearchPage() {
       </div>
 
       {/* Results */}
-      {query.trim() ? (
+      {query.length >= 2 ? (
         <>
           <div className="text-sm text-muted-foreground">
-            {totalResults} result{totalResults !== 1 ? "s" : ""} for &quot;{query}&quot;
+            {searching
+              ? "Searching..."
+              : `${totalResults} result${totalResults !== 1 ? "s" : ""} for "${query}"`}
           </div>
 
           <Tabs
@@ -166,14 +159,12 @@ export default function SearchPage() {
             onValueChange={(v) => setActiveTab(v as SearchTab)}
           >
             <TabsList>
-              <TabsTrigger value="all">
-                All ({totalResults})
-              </TabsTrigger>
+              <TabsTrigger value="all">All ({totalResults})</TabsTrigger>
               <TabsTrigger value="tasks">
                 Tasks ({searchResults.tasks.length})
               </TabsTrigger>
               <TabsTrigger value="spaces">
-                Spaces ({searchResults.spaces.length + searchResults.lists.length})
+                Spaces ({searchResults.spaces.length})
               </TabsTrigger>
               <TabsTrigger value="people">
                 People ({searchResults.people.length})
@@ -189,13 +180,8 @@ export default function SearchPage() {
                     Tasks
                   </h3>
                   <div className="space-y-2">
-                    {searchResults.tasks.slice(0, 5).map((task) => (
-                      <TaskCard
-                        key={task.id}
-                        task={task}
-                        onClick={() => setActiveTask(task.id)}
-                        variant="list"
-                      />
+                    {searchResults.tasks.slice(0, 5).map((result) => (
+                      <SearchResultItem key={result.id} result={result} />
                     ))}
                     {searchResults.tasks.length > 5 && (
                       <Button
@@ -210,53 +196,16 @@ export default function SearchPage() {
                 </div>
               )}
 
-              {/* Spaces & Lists */}
-              {(searchResults.spaces.length > 0 ||
-                searchResults.lists.length > 0) && (
+              {/* Spaces */}
+              {searchResults.spaces.length > 0 && (
                 <div>
                   <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
                     <FolderKanban className="h-4 w-4" />
-                    Spaces & Lists
+                    Spaces
                   </h3>
                   <div className="grid gap-2 md:grid-cols-2">
-                    {searchResults.spaces.map((space) => (
-                      <div
-                        key={space.id}
-                        className="flex items-center gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50"
-                      >
-                        <div
-                          className="flex h-8 w-8 items-center justify-center rounded"
-                          style={{ backgroundColor: space.color }}
-                        >
-                          <span className="text-sm font-bold text-white">
-                            {space.name.charAt(0)}
-                          </span>
-                        </div>
-                        <div>
-                          <p className="font-medium">{space.name}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {space.memberIds.length} members
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                    {searchResults.lists.map((list) => (
-                      <Link
-                        key={list.id}
-                        href={`/list/${list.id}`}
-                        className="flex items-center gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50"
-                      >
-                        <div className="flex h-8 w-8 items-center justify-center rounded bg-muted">
-                          <FileText className="h-4 w-4" />
-                        </div>
-                        <div>
-                          <p className="font-medium">{list.name}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {tasks.filter((t) => t.listId === list.id).length}{" "}
-                            tasks
-                          </p>
-                        </div>
-                      </Link>
+                    {searchResults.spaces.map((result) => (
+                      <SearchResultItem key={result.id} result={result} />
                     ))}
                   </div>
                 </div>
@@ -270,42 +219,26 @@ export default function SearchPage() {
                     People
                   </h3>
                   <div className="grid gap-2 md:grid-cols-2">
-                    {searchResults.people.map((user) => (
-                      <div
-                        key={user.id}
-                        className="flex items-center gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50"
-                      >
-                        <Avatar>
-                          <AvatarImage src={user.avatar} />
-                          <AvatarFallback>{user.name.charAt(0)}</AvatarFallback>
-                        </Avatar>
-                        <div>
-                          <p className="font-medium">{user.name}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {user.email}
-                          </p>
-                        </div>
-                        <Badge variant="secondary" className="ml-auto">
-                          {user.role}
-                        </Badge>
-                      </div>
+                    {searchResults.people.map((result) => (
+                      <SearchResultItem key={result.id} result={result} />
                     ))}
                   </div>
                 </div>
+              )}
+
+              {!searching && totalResults === 0 && (
+                <p className="py-8 text-center text-muted-foreground">
+                  No results found for &quot;{query}&quot;
+                </p>
               )}
             </TabsContent>
 
             <TabsContent value="tasks" className="mt-4">
               <div className="space-y-2">
-                {searchResults.tasks.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    onClick={() => setActiveTask(task.id)}
-                    variant="list"
-                  />
+                {searchResults.tasks.map((result) => (
+                  <SearchResultItem key={result.id} result={result} />
                 ))}
-                {searchResults.tasks.length === 0 && (
+                {searchResults.tasks.length === 0 && !searching && (
                   <p className="py-8 text-center text-muted-foreground">
                     No tasks found
                   </p>
@@ -315,67 +248,27 @@ export default function SearchPage() {
 
             <TabsContent value="spaces" className="mt-4">
               <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
-                {searchResults.spaces.map((space) => (
-                  <div
-                    key={space.id}
-                    className="flex items-center gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50"
-                  >
-                    <div
-                      className="flex h-10 w-10 items-center justify-center rounded"
-                      style={{ backgroundColor: space.color }}
-                    >
-                      <span className="font-bold text-white">
-                        {space.name.charAt(0)}
-                      </span>
-                    </div>
-                    <div>
-                      <p className="font-medium">{space.name}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {space.memberIds.length} members
-                      </p>
-                    </div>
-                  </div>
+                {searchResults.spaces.map((result) => (
+                  <SearchResultItem key={result.id} result={result} />
                 ))}
-                {searchResults.lists.map((list) => (
-                  <Link
-                    key={list.id}
-                    href={`/list/${list.id}`}
-                    className="flex items-center gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50"
-                  >
-                    <div className="flex h-10 w-10 items-center justify-center rounded bg-muted">
-                      <FileText className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <p className="font-medium">{list.name}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {tasks.filter((t) => t.listId === list.id).length} tasks
-                      </p>
-                    </div>
-                  </Link>
-                ))}
+                {searchResults.spaces.length === 0 && !searching && (
+                  <p className="py-8 text-center text-muted-foreground col-span-3">
+                    No spaces found
+                  </p>
+                )}
               </div>
             </TabsContent>
 
             <TabsContent value="people" className="mt-4">
               <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
-                {searchResults.people.map((user) => (
-                  <div
-                    key={user.id}
-                    className="flex items-center gap-3 rounded-lg border p-4"
-                  >
-                    <Avatar className="h-12 w-12">
-                      <AvatarImage src={user.avatar} />
-                      <AvatarFallback>{user.name.charAt(0)}</AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1">
-                      <p className="font-medium">{user.name}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {user.email}
-                      </p>
-                    </div>
-                    <Badge variant="secondary">{user.role}</Badge>
-                  </div>
+                {searchResults.people.map((result) => (
+                  <SearchResultItem key={result.id} result={result} />
                 ))}
+                {searchResults.people.length === 0 && !searching && (
+                  <p className="py-8 text-center text-muted-foreground col-span-3">
+                    No people found
+                  </p>
+                )}
               </div>
             </TabsContent>
           </Tabs>
@@ -385,10 +278,60 @@ export default function SearchPage() {
           <Search className="mb-4 h-12 w-12 text-muted-foreground/50" />
           <h3 className="text-lg font-medium">Start searching</h3>
           <p className="text-muted-foreground">
-            Type something to search across tasks, spaces, and people.
+            Type at least 2 characters to search across tasks, spaces, and people.
           </p>
         </div>
       )}
     </div>
   );
+}
+
+// Generic result card component
+function SearchResultItem({ result }: { result: SearchResult }) {
+  const content = (
+    <div className="flex items-center gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50">
+      {result.type === "employee" ? (
+        <Avatar className="h-9 w-9">
+          <AvatarImage src={result.avatar} />
+          <AvatarFallback>{result.title.charAt(0)}</AvatarFallback>
+        </Avatar>
+      ) : result.type === "space" ? (
+        <div className="flex h-9 w-9 items-center justify-center rounded bg-primary/10">
+          <FolderKanban className="h-4 w-4 text-primary" />
+        </div>
+      ) : (
+        <div className="flex h-9 w-9 items-center justify-center rounded bg-muted">
+          <FileText className="h-4 w-4 text-muted-foreground" />
+        </div>
+      )}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium truncate">{result.title}</p>
+        {result.subtitle && (
+          <p className="text-xs text-muted-foreground truncate">
+            {result.subtitle}
+          </p>
+        )}
+      </div>
+      {result.priority && (
+        <Badge variant="outline" className="text-xs shrink-0">
+          {result.priority}
+        </Badge>
+      )}
+      {result.status && (
+        <Badge variant="secondary" className="text-xs shrink-0">
+          {result.status}
+        </Badge>
+      )}
+    </div>
+  );
+
+  if (result.url) {
+    return (
+      <Link href={result.url} className="block">
+        {content}
+      </Link>
+    );
+  }
+
+  return content;
 }

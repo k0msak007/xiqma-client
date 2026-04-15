@@ -68,6 +68,7 @@ import { CreateFolderDialog } from "@/components/create-folder-dialog";
 import { CreateListDialog } from "@/components/create-list-dialog";
 import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import { LanguageSwitcher } from "@/components/language-switcher";
+import { SpaceMembersDialog } from "@/components/space-members-dialog";
 import { useAuthStore } from "@/lib/auth-store";
 
 const spaceIcons: Record<string, React.ReactNode> = {
@@ -122,6 +123,11 @@ export function AppSidebar() {
 
   const [showCreateSpaceDialog, setShowCreateSpaceDialog] = useState(false);
   const [archiveExpanded, setArchiveExpanded] = useState(false);
+  const [membersDialogState, setMembersDialogState] = useState<{ open: boolean; spaceId: string; spaceName: string }>({
+    open: false,
+    spaceId: "",
+    spaceName: "",
+  });
 
   // Create dialog state
   const [createFolderSpaceId, setCreateFolderSpaceId] = useState<string | null>(null);
@@ -267,6 +273,12 @@ export function AppSidebar() {
                             >
                               <Plus className="h-4 w-4 mr-2" />
                               Add List
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => setMembersDialogState({ open: true, spaceId: space.id, spaceName: space.name })}
+                            >
+                              <Plus className="h-4 w-4 mr-2" />
+                              Manage Members
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
@@ -611,6 +623,13 @@ export function AppSidebar() {
             : "This will permanently delete the list and all tasks inside. This action cannot be undone."
         }
         onConfirm={handleDeleteConfirm}
+      />
+
+      <SpaceMembersDialog
+        open={membersDialogState.open}
+        onOpenChange={(open) => setMembersDialogState(prev => ({ ...prev, open }))}
+        spaceId={membersDialogState.spaceId}
+        spaceName={membersDialogState.spaceName}
       />
     </Sidebar>
   );

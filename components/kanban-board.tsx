@@ -19,7 +19,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { TaskCard } from "@/components/task-card";
-import { useTaskStore } from "@/lib/store";
+import { useListTaskStore } from "@/lib/list-task-store";
 import type { Status, Task } from "@/lib/types";
 
 interface KanbanBoardProps {
@@ -28,6 +28,8 @@ interface KanbanBoardProps {
   tasks: Task[];
   onTaskClick: (taskId: string) => void;
   selectedTaskId?: string;
+  onAddTask?: (statusId: string) => void;
+  onAddStatus?: () => void;
 }
 
 export function KanbanBoard({
@@ -36,8 +38,10 @@ export function KanbanBoard({
   tasks,
   onTaskClick,
   selectedTaskId,
+  onAddTask,
+  onAddStatus,
 }: KanbanBoardProps) {
-  const { updateTaskStatus, reorderTasks, addTask } = useTaskStore();
+  const { updateTaskStatus, reorderTasks } = useListTaskStore();
 
   // Group tasks by status
   const columns = useMemo(() => {
@@ -81,18 +85,15 @@ export function KanbanBoard({
     if (sourceStatusId !== destStatusId) {
       destTasks.splice(destination.index, 0, movedTask);
 
-      // Update task status and order
+      // Update task status (this also triggers a reorder internally)
       updateTaskStatus(draggableId, destStatusId);
 
-      // Reorder destination column
+      // Only call reorder for destination column (where the task moved to)
+      // The source column reorder is handled by updateTaskStatus internally
       const orderedDestTaskIds = destTasks.map((t) => t.id);
       reorderTasks(listId, destStatusId, orderedDestTaskIds);
-
-      // Reorder source column
-      const orderedSourceTaskIds = sourceTasks.map((t) => t.id);
-      reorderTasks(listId, sourceStatusId, orderedSourceTaskIds);
     } else {
-      // Moving within the same column
+      // Moving within the same column - just reorder
       sourceTasks.splice(destination.index, 0, movedTask);
       const orderedTaskIds = sourceTasks.map((t) => t.id);
       reorderTasks(listId, sourceStatusId, orderedTaskIds);
@@ -100,24 +101,15 @@ export function KanbanBoard({
   };
 
   const handleAddTask = (statusId: string) => {
-    const newTask: Task = {
-      id: `task-${Date.now()}`,
-      title: "New Task",
-      statusId,
-      priority: "normal",
-      assigneeIds: [],
-      creatorId: "user-1",
-      listId,
-      tags: [],
-      subtasks: [],
-      comments: [],
-      attachments: [],
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      order: columns[statusId]?.length || 0,
-    };
-    addTask(newTask);
-    onTaskClick(newTask.id);
+    if (onAddTask) {
+      onAddTask(statusId);
+    }
+  };
+
+  const handleAddStatus = () => {
+    if (onAddStatus) {
+      onAddStatus();
+    }
   };
 
   return (
@@ -233,6 +225,7 @@ export function KanbanBoard({
             <Button
               variant="ghost"
               className="w-full justify-start text-muted-foreground"
+              onClick={handleAddStatus}
             >
               <Plus className="mr-2 h-4 w-4" />
               Add Status

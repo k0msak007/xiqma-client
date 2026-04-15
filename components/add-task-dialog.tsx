@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { format } from "date-fns";
 import {
   CalendarIcon,
@@ -42,51 +42,48 @@ import {
 } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { toast } from "sonner";
 import { useTaskStore } from "@/lib/store";
-import { users, getListById } from "@/lib/mock-data";
+import { useListTaskStore } from "@/lib/list-task-store";
+import { useWorkspaceStore } from "@/lib/workspace-store";
+import { employeesApi } from "@/lib/api/employees";
+import { spacesApi } from "@/lib/api/spaces";
 import {
   priorityConfig,
   storyPointsOptions,
-  type Task,
   type Priority,
   type StoryPoints,
-  type Attachment,
 } from "@/lib/types";
 
 interface AddTaskDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   listId: string;
+  defaultStatusId?: string;
+  onSuccess?: () => void;
 }
 
-export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps) {
-  const { addTask, tasks, taskTypes, spaces, lists } = useTaskStore();
-  const list = getListById(listId);
-  
-  // Get space for this list to determine task type category filter
-  const currentList = lists.find(l => l.id === listId);
-  const currentSpace = spaces.find(s => s.id === currentList?.spaceId);
-  const spaceType = currentSpace?.type || "organization";
-  
-  // Filter task types based on space type
-  const filteredTaskTypes = taskTypes.filter(tt => tt.category === spaceType);
+export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onSuccess }: AddTaskDialogProps) {
+  const { taskTypes } = useTaskStore();
+  const { createTask, statuses, tasks, saving } = useListTaskStore();
+  const { lists, spaces } = useWorkspaceStore();
 
-  // Generate next task ID
-  const generateTaskId = () => {
-    const existingTaskIds = tasks
-      .map(t => t.taskId)
-      .filter(id => id && id.startsWith("TASK-"))
-      .map(id => parseInt(id!.replace("TASK-", "")))
-      .filter(n => !isNaN(n));
-    const nextNum = existingTaskIds.length > 0 ? Math.max(...existingTaskIds) + 1 : 1;
-    return `TASK-${nextNum.toString().padStart(3, "0")}`;
-  };
+  const list = lists.find((l) => l.id === listId);
+  const currentSpace = spaces.find((s) => s.id === list?.spaceId);
+  const spaceType = currentSpace?.type || "organization";
+
+  // Filter task types based on space type
+  const filteredTaskTypes = taskTypes.filter((tt) => tt.category === spaceType);
+
+  // Employees for assignee selection
+  const [employees, setEmployees] = useState<{ id: string; name: string; avatarUrl: string | null }[]>([]);
+  const [employeesLoading, setEmployeesLoading] = useState(false);
+  const [employeesError, setEmployeesError] = useState<string | null>(null);
 
   // Form state
-  const [taskId, setTaskId] = useState(generateTaskId());
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [statusId, setStatusId] = useState(list?.statuses[0]?.id || "status-1");
+  const [statusId, setStatusId] = useState<string>("");
   const [taskTypeId, setTaskTypeId] = useState<string | undefined>();
   const [priority, setPriority] = useState<Priority>("normal");
   const [assigneeIds, setAssigneeIds] = useState<string[]>([]);
@@ -98,24 +95,76 @@ export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps
   const [storyPoints, setStoryPoints] = useState<StoryPoints | undefined>();
   const [timeEstimateHours, setTimeEstimateHours] = useState("");
   const [timeEstimateMinutes, setTimeEstimateMinutes] = useState("");
-  const [timeSpentHours, setTimeSpentHours] = useState("");
-  const [timeSpentMinutes, setTimeSpentMinutes] = useState("");
   const [predecessorIds, setPredecessorIds] = useState<string[]>([]);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  
+
+  // Load employees (space members) when dialog opens
+  useEffect(() => {
+    if (open && list?.spaceId) {
+      setEmployeesLoading(true);
+      setEmployeesError(null);
+      
+      // Get space members instead of all employees
+      spacesApi.get(list.spaceId)
+        .then((spaceDetail) => {
+          console.log("[AddTaskDialog] Space members response:", spaceDetail);
+          const members = spaceDetail.members || [];
+          console.log("[AddTaskDialog] Space members loaded:", members.length);
+          setEmployees(members.map((m) => ({ 
+            id: m.employeeId, 
+            name: m.employee.name, 
+            avatarUrl: m.employee.avatarUrl ?? null 
+          })));
+        })
+        .catch((err) => {
+          console.error("Failed to load space members:", err);
+          // Fallback to all employees if space members fail
+          return employeesApi.list({ isActive: true, limit: 200 });
+        })
+        .then((res) => {
+          if (res) {
+            const employeeList = Array.isArray(res) ? res : (res.rows || []);
+            setEmployees(employeeList.map((e) => ({ id: e.id, name: e.name, avatarUrl: e.avatarUrl })));
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to load employees:", err);
+          setEmployeesError(err instanceof Error ? err.message : "Failed to load employees");
+        })
+        .finally(() => {
+          setEmployeesLoading(false);
+        });
+    }
+  }, [open, list?.spaceId]);
+
+  // Set initial statusId from statuses when dialog opens
+  useEffect(() => {
+    console.log("[AddTaskDialog] statuses:", statuses, "statusId:", statusId, "open:", open);
+    if (open) {
+      if (defaultStatusId && statuses.some(s => s.id === defaultStatusId)) {
+        setStatusId(defaultStatusId);
+      } else if (statuses.length > 0 && !statusId) {
+        setStatusId(statuses[0].id);
+      } else if (statuses.length === 0) {
+        console.warn("[AddTaskDialog] No statuses found! Cannot create task.");
+      }
+    }
+  }, [open, statuses, statusId, defaultStatusId]);
+
   // Get tasks in the same list for predecessor selection
   const listTasks = tasks.filter((t) => t.listId === listId);
 
   // Calculate Plan Finish from Plan Start + Duration
-  const planFinish = planStart && duration 
-    ? new Date(planStart.getTime() + parseInt(duration) * 24 * 60 * 60 * 1000)
-    : undefined;
+  const planFinish =
+    planStart && duration
+      ? new Date(
+          planStart.getTime() + parseInt(duration) * 24 * 60 * 60 * 1000
+        )
+      : undefined;
 
   const resetForm = () => {
-    setTaskId(generateTaskId());
     setTitle("");
     setDescription("");
-    setStatusId(list?.statuses[0]?.id || "status-1");
+    setStatusId(statuses.length > 0 ? statuses[0].id : "");
     setTaskTypeId(undefined);
     setPriority("normal");
     setAssigneeIds([]);
@@ -127,10 +176,7 @@ export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps
     setStoryPoints(undefined);
     setTimeEstimateHours("");
     setTimeEstimateMinutes("");
-    setTimeSpentHours("");
-    setTimeSpentMinutes("");
     setPredecessorIds([]);
-    setAttachments([]);
   };
 
   const handleAssigneeToggle = (userId: string) => {
@@ -141,26 +187,60 @@ export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps
     );
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
+  const handleSubmit = async () => {
+    console.log("[AddTaskDialog] Submit clicked", { title, assigneeIds, statusId, statuses: statuses.length });
+    
+    if (!title.trim()) {
+      toast.error("กรุณากรอกชื่อ task");
+      return;
+    }
+    
+    if (assigneeIds.length === 0) {
+      toast.error("กรุณาเลือกผู้รับผิดชอบ");
+      return;
+    }
+    
+    if (statuses.length === 0) {
+      toast.error("ไม่พบ status - กรุณาสร้าง status ก่อนสร้าง task");
+      return;
+    }
 
-    const newAttachments: Attachment[] = Array.from(files).map((file) => ({
-      id: `attachment-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      name: file.name,
-      url: URL.createObjectURL(file),
-      type: file.type,
-      size: file.size,
-      uploadedBy: "user-1",
-      uploadedAt: new Date(),
-    }));
+    const totalEstimateMinutes =
+      parseInt(timeEstimateHours || "0") * 60 +
+      parseInt(timeEstimateMinutes || "0");
 
-    setAttachments((prev) => [...prev, ...newAttachments]);
-    e.target.value = "";
-  };
+    const payload = {
+      title: title.trim(),
+      listId,
+      assigneeId: assigneeIds[0],
+      description: description.trim() || undefined,
+      listStatusId: statusId || statuses[0]?.id,
+      priority,
+      storyPoints: storyPoints || undefined,
+      timeEstimateHours:
+        totalEstimateMinutes > 0 ? totalEstimateMinutes / 60 : undefined,
+      planStart: planStart
+        ? planStart.toISOString().split("T")[0]
+        : undefined,
+      durationDays: duration ? parseInt(duration) : undefined,
+      deadline: dueDate ? dueDate.toISOString() : undefined,
+    };
 
-  const handleRemoveAttachment = (attachmentId: string) => {
-    setAttachments((prev) => prev.filter((a) => a.id !== attachmentId));
+    // Only add taskTypeId if it's a valid UUID format
+    if (taskTypeId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskTypeId)) {
+      Object.assign(payload, { taskTypeId });
+    }
+
+    console.log("[AddTaskDialog] Creating task with payload:", payload);
+    
+    const task = await createTask(payload);
+    if (task) {
+      resetForm();
+      onOpenChange(false);
+      if (onSuccess) {
+        onSuccess();
+      }
+    }
   };
 
   const formatFileSize = (bytes: number) => {
@@ -169,53 +249,6 @@ export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps
     const sizes = ["Bytes", "KB", "MB", "GB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
-  };
-
-  const handleSubmit = () => {
-    if (!title.trim()) return;
-
-    const timeEstimate =
-      (parseInt(timeEstimateHours || "0") * 60) +
-      parseInt(timeEstimateMinutes || "0");
-    
-    const timeSpent =
-      (parseInt(timeSpentHours || "0") * 60) +
-      parseInt(timeSpentMinutes || "0");
-
-    const listTasks = tasks.filter((t) => t.listId === listId);
-
-    const newTask: Task = {
-      id: `task-${Date.now()}`,
-      taskId: taskId,
-      title: title.trim(),
-      description: description.trim() || undefined,
-      statusId,
-      taskTypeId,
-      priority,
-      assigneeIds,
-      creatorId: "user-1",
-      listId,
-      dueDate,
-      planStart,
-      duration: duration ? parseInt(duration) : undefined,
-      actualStart,
-      actualFinish,
-      storyPoints,
-      predecessorIds: predecessorIds.length > 0 ? predecessorIds : undefined,
-      timeEstimate: timeEstimate > 0 ? timeEstimate : undefined,
-      timeSpent: timeSpent > 0 ? timeSpent : undefined,
-      tags: [],
-      subtasks: [],
-      comments: [],
-      attachments,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      order: listTasks.length,
-    };
-
-    addTask(newTask);
-    resetForm();
-    onOpenChange(false);
   };
 
   return (
@@ -229,33 +262,18 @@ export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps
         </DialogHeader>
 
         <div className="space-y-6 py-4">
-          {/* Task ID & Task Name Row */}
-          <div className="grid grid-cols-4 gap-4">
-            {/* Task ID */}
-            <div className="space-y-2">
-              <Label htmlFor="taskId">Task ID</Label>
-              <Input
-                id="taskId"
-                value={taskId}
-                onChange={(e) => setTaskId(e.target.value)}
-                placeholder="TASK-001"
-                className="font-mono"
-              />
-            </div>
-
-            {/* Task Name */}
-            <div className="space-y-2 col-span-3">
-              <Label htmlFor="title">
-                Task Name <span className="text-destructive">*</span>
-              </Label>
-              <Input
-                id="title"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Enter task name..."
-                autoFocus
-              />
-            </div>
+          {/* Task Name */}
+          <div className="space-y-2">
+            <Label htmlFor="title">
+              Task Name <span className="text-destructive">*</span>
+            </Label>
+            <Input
+              id="title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Enter task name..."
+              autoFocus
+            />
           </div>
 
           {/* Description */}
@@ -279,10 +297,10 @@ export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps
               <Label>Status</Label>
               <Select value={statusId} onValueChange={setStatusId}>
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue placeholder="Select status..." />
                 </SelectTrigger>
                 <SelectContent>
-                  {list?.statuses.map((status) => (
+                  {statuses.map((status) => (
                     <SelectItem key={status.id} value={status.id}>
                       <div className="flex items-center gap-2">
                         <div
@@ -302,7 +320,9 @@ export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps
               <Label>Task Type</Label>
               <Select
                 value={taskTypeId || "none"}
-                onValueChange={(v) => setTaskTypeId(v === "none" ? undefined : v)}
+                onValueChange={(v) =>
+                  setTaskTypeId(v === "none" ? undefined : v)
+                }
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select type..." />
@@ -318,7 +338,9 @@ export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps
                         />
                         {tt.name}
                         {tt.countsForPoints && (
-                          <Badge variant="outline" className="ml-auto text-[10px]">+Pts</Badge>
+                          <Badge variant="outline" className="ml-auto text-[10px]">
+                            +Pts
+                          </Badge>
                         )}
                       </div>
                     </SelectItem>
@@ -403,7 +425,9 @@ export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps
                           <Checkbox checked={isSelected} />
                           <div className="flex-1 min-w-0">
                             <p className="text-sm truncate">{t.title}</p>
-                            <p className="text-xs text-muted-foreground">{t.taskId}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {t.taskId}
+                            </p>
                           </div>
                         </div>
                       );
@@ -447,35 +471,6 @@ export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps
                 max="59"
                 value={timeEstimateMinutes}
                 onChange={(e) => setTimeEstimateMinutes(e.target.value)}
-                placeholder="0"
-                className="w-20"
-              />
-              <span className="text-sm text-muted-foreground">minutes</span>
-            </div>
-          </div>
-
-          {/* Time Tracked */}
-          <div className="space-y-2">
-            <Label className="flex items-center gap-2">
-              <Clock className="h-4 w-4" />
-              Time Tracked (Manual Entry)
-            </Label>
-            <div className="flex items-center gap-2">
-              <Input
-                type="number"
-                min="0"
-                value={timeSpentHours}
-                onChange={(e) => setTimeSpentHours(e.target.value)}
-                placeholder="0"
-                className="w-20"
-              />
-              <span className="text-sm text-muted-foreground">hours</span>
-              <Input
-                type="number"
-                min="0"
-                max="59"
-                value={timeSpentMinutes}
-                onChange={(e) => setTimeSpentMinutes(e.target.value)}
                 placeholder="0"
                 className="w-20"
               />
@@ -570,109 +565,59 @@ export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps
 
           <Separator />
 
-          {/* Actual Dates */}
-          <div className="space-y-4">
-            <Label className="text-base font-medium">Actuals</Label>
-            <div className="grid grid-cols-2 gap-4">
-              {/* Actual Start */}
-              <div className="space-y-2">
-                <Label>Actual Start</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn(
-                        "w-full justify-start text-left font-normal",
-                        !actualStart && "text-muted-foreground"
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {actualStart ? format(actualStart, "PPP") : "Select date"}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={actualStart}
-                      onSelect={setActualStart}
-                      initialFocus
-                    />
-                  </PopoverContent>
-                </Popover>
-              </div>
-
-              {/* Actual Finish */}
-              <div className="space-y-2">
-                <Label>Actual Finish</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn(
-                        "w-full justify-start text-left font-normal",
-                        !actualFinish && "text-muted-foreground"
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {actualFinish ? format(actualFinish, "PPP") : "Select date"}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={actualFinish}
-                      onSelect={setActualFinish}
-                      initialFocus
-                    />
-                  </PopoverContent>
-                </Popover>
-              </div>
-            </div>
-          </div>
-
-          <Separator />
-
           {/* Assignees */}
           <div className="space-y-2">
-            <Label>Assignees</Label>
-            <div className="flex flex-wrap gap-2">
-              {users.map((user) => {
-                const isSelected = assigneeIds.includes(user.id);
-                return (
-                  <div
-                    key={user.id}
-                    onClick={() => handleAssigneeToggle(user.id)}
-                    className={cn(
-                      "flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 transition-colors",
-                      isSelected
-                        ? "border-primary bg-primary/10"
-                        : "border-border hover:bg-muted"
-                    )}
-                  >
-                    <Checkbox
-                      checked={isSelected}
-                      className="h-4 w-4"
-                      onCheckedChange={() => handleAssigneeToggle(user.id)}
-                    />
-                    <Avatar className="h-5 w-5">
-                      <AvatarImage src={user.avatar} />
-                      <AvatarFallback className="text-[10px]">
-                        {user.name.charAt(0)}
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="text-sm">{user.name}</span>
-                  </div>
-                );
-              })}
+            <Label>
+              Assignee <span className="text-destructive">*</span>
+            </Label>
+<div className="flex flex-wrap gap-2">
+              {employeesLoading ? (
+                <p className="text-sm text-muted-foreground">Loading employees...</p>
+              ) : employeesError ? (
+                <p className="text-sm text-red-500">{employeesError}</p>
+              ) : employees.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No employees found</p>
+              ) : (
+                <>
+                  {employees.map((emp) => {
+                    const isSelected = assigneeIds.includes(emp.id);
+                    return (
+                      <div
+                        key={emp.id}
+                        onClick={() => handleAssigneeToggle(emp.id)}
+                        className={cn(
+                          "flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 transition-colors",
+                          isSelected
+                            ? "border-primary bg-primary/10"
+                            : "border-border hover:bg-muted"
+                        )}
+                      >
+                        <Checkbox
+                          checked={isSelected}
+                          className="h-4 w-4"
+                          onCheckedChange={() => handleAssigneeToggle(emp.id)}
+                        />
+                        <Avatar className="h-5 w-5">
+                          <AvatarImage src={emp.avatarUrl ?? undefined} />
+                          <AvatarFallback className="text-[10px]">
+                            {emp.name.charAt(0)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="text-sm">{emp.name}</span>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
             </div>
             {assigneeIds.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1">
                 <span className="text-xs text-muted-foreground">Selected:</span>
                 {assigneeIds.map((id) => {
-                  const user = users.find((u) => u.id === id);
+                  const emp = employees.find((e) => e.id === id);
                   return (
                     <Badge key={id} variant="secondary" className="text-xs">
-                      {user?.name}
+                      {emp?.name}
                       <button
                         onClick={() => handleAssigneeToggle(id)}
                         className="ml-1 hover:text-destructive"
@@ -685,71 +630,17 @@ export function AddTaskDialog({ open, onOpenChange, listId }: AddTaskDialogProps
               </div>
             )}
           </div>
-
-          <Separator />
-
-          {/* Attachments */}
-          <div className="space-y-2">
-            <Label>Attachments</Label>
-            <div className="space-y-2">
-              {/* Upload Area */}
-              <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-border p-6 transition-colors hover:border-primary hover:bg-muted/50">
-                <Upload className="mb-2 h-8 w-8 text-muted-foreground" />
-                <span className="text-sm font-medium">
-                  Click to upload or drag and drop
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  All file types supported
-                </span>
-                <input
-                  type="file"
-                  multiple
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-              </label>
-
-              {/* File List */}
-              {attachments.length > 0 && (
-                <div className="space-y-2">
-                  {attachments.map((attachment) => (
-                    <div
-                      key={attachment.id}
-                      className="flex items-center justify-between rounded-lg border bg-muted/50 p-2"
-                    >
-                      <div className="flex items-center gap-2">
-                        <FileIcon className="h-4 w-4 text-muted-foreground" />
-                        <div>
-                          <p className="text-sm font-medium">
-                            {attachment.name}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {formatFileSize(attachment.size)}
-                          </p>
-                        </div>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={() => handleRemoveAttachment(attachment.id)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={!title.trim()}>
-            Create Task
+          <Button
+            onClick={handleSubmit}
+            disabled={!title.trim() || assigneeIds.length === 0 || saving}
+          >
+            {saving ? "Creating..." : "Create Task"}
           </Button>
         </DialogFooter>
       </DialogContent>

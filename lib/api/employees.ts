@@ -51,6 +51,7 @@ export interface UpdateEmployeePayload {
 export interface EmployeeListResponse {
   rows: Employee[];
   total: number;
+  totalPages?: number;
 }
 
 export interface ChangePasswordPayload {

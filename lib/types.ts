@@ -162,13 +162,16 @@ export function calculatePlanFinish(planStart: Date | undefined, duration: numbe
   return planFinish;
 }
 
-// Helper function to calculate Plan Progress: ((Today - PlanStart) / Duration) * 100
-export function calculatePlanProgress(planStart: Date | undefined, duration: number | undefined): number {
-  if (!planStart || !duration || duration === 0) return 0;
+// Helper function to calculate Plan Progress: ((Today - Start) / (End - Start)) * 100
+export function calculatePlanProgress(planStart: Date | undefined, planFinish: Date | undefined): number {
+  if (!planStart || !planFinish) return 0;
   const today = new Date();
   const start = new Date(planStart);
+  const end = new Date(planFinish);
+  const totalDays = Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+  if (totalDays <= 0) return 0;
   const daysPassed = Math.floor((today.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
-  const progress = (daysPassed / duration) * 100;
+  const progress = (daysPassed / totalDays) * 100;
   return Math.min(100, Math.max(0, progress));
 }
 

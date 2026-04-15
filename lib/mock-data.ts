@@ -1,4 +1,5 @@
 import type { User, Space, Folder, List, Task, Status, Tag, Activity, Role, TaskType, HolidaySettings, DayOfWeek, Position } from "./types";
+import { getCachedEmployee } from "@/lib/employee-cache";
 
 // Organization Positions
 export const positions: Position[] = [
@@ -806,7 +807,7 @@ export const activities: Activity[] = [
 
 // Helper functions
 export function getUserById(id: string): User | undefined {
-  return users.find((u) => u.id === id);
+  return users.find((u) => u.id === id) ?? getCachedEmployee(id);
 }
 
 export function getRoleById(id: string): Role | undefined {
