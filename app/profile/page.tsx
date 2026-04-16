@@ -1,16 +1,10 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import {
-  User,
-  Bell,
-  Palette,
-  Globe,
-  Loader2,
-} from "lucide-react";
+import { User, Bell, Palette, Globe, Loader2 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -36,17 +30,15 @@ import {
 } from "@/components/ui/dialog";
 import { useAuthStore } from "@/lib/auth-store";
 import { useEmployee } from "@/hooks/use-employee";
-import { users } from "@/lib/mock-data";
+import { employeesApi, type EmployeeDetail } from "@/lib/api/employees";
 import { useTranslation, useLanguageStore, type Language } from "@/lib/i18n";
 import { toast } from "sonner";
 
-const currentUser = users[0];
-
 const passwordSchema = z.object({
   currentPassword: z.string().min(1, "กรุณากรอกรหัสผ่านปัจจุบัน"),
-  newPassword: z.string().min(8, "รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร"),
+  newPassword:     z.string().min(8, "รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร"),
   confirmPassword: z.string().min(1, "กรุณายืนยันรหัสผ่าน"),
-}).refine((data) => data.newPassword === data.confirmPassword, {
+}).refine((d) => d.newPassword === d.confirmPassword, {
   message: "รหัสผ่านไม่ตรงกัน",
   path: ["confirmPassword"],
 });
@@ -57,77 +49,83 @@ export default function ProfilePage() {
   const { t } = useTranslation();
   const { language, setLanguage } = useLanguageStore();
   const { user } = useAuthStore();
-  
-  const { uploadAvatar, changePassword: apiChangePassword, isLoading: isApiLoading } = useEmployee({
-    employeeId: user?.id || "",
+
+  const { uploadAvatar, changePassword: apiChangePassword } = useEmployee({
+    employeeId: user?.id ?? "",
   });
-  
-  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ─── Real employee data ────────────────────────────────────────────────────
+  const [profile, setProfile] = useState<EmployeeDetail | null>(null);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(true);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    setIsLoadingProfile(true);
+    employeesApi.get(user.id)
+      .then(setProfile)
+      .catch(() => toast.error("โหลดข้อมูลโปรไฟล์ไม่สำเร็จ"))
+      .finally(() => setIsLoadingProfile(false));
+  }, [user?.id]);
+
+  // ─── Avatar ────────────────────────────────────────────────────────────────
+  const fileInputRef   = useRef<HTMLInputElement>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
+  const [isUploading,   setIsUploading]   = useState(false);
+
+  // ─── Password modal ────────────────────────────────────────────────────────
   const [showPasswordModal, setShowPasswordModal] = useState(false);
-  
   const {
     register: registerPassword,
     handleSubmit: handlePasswordSubmit,
     reset: resetPasswordForm,
     formState: { errors: passwordErrors, isSubmitting: isChangingPassword },
-  } = useForm<PasswordFormData>({
-    resolver: zodResolver(passwordSchema),
-  });
-  
+  } = useForm<PasswordFormData>({ resolver: zodResolver(passwordSchema) });
+
+  // ─── Notification toggles (local UI state) ────────────────────────────────
   const [notifications, setNotifications] = useState({
-    email: true,
-    desktop: true,
-    taskAssigned: true,
+    email:         true,
+    desktop:       true,
+    taskAssigned:  true,
     taskCompleted: false,
-    mentions: true,
-    weeklyDigest: true,
+    mentions:      true,
+    weeklyDigest:  true,
   });
+
+  // ─── Display values ───────────────────────────────────────────────────────
+  const displayName   = profile?.name  ?? user?.name  ?? "—";
+  const displayEmail  = profile?.email ?? user?.email ?? "—";
+  const displayAvatar = avatarPreview  ?? profile?.avatarUrl ?? undefined;
+  const displayRole   = profile?.positionName ?? profile?.roleName ?? profile?.role ?? "—";
 
   return (
     <div className="flex flex-col gap-6 p-6">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{t("profile.profile")}</h1>
-        <p className="text-muted-foreground">
-          {t("profile.updateDetails")}
-        </p>
+        <p className="text-muted-foreground">{t("profile.updateDetails")}</p>
       </div>
 
       <Tabs defaultValue="profile" className="space-y-6">
         <TabsList>
-          <TabsTrigger value="profile" className="gap-2">
-            <User className="h-4 w-4" />
-            {t("settings.profile")}
-          </TabsTrigger>
-          <TabsTrigger value="notifications" className="gap-2">
-            <Bell className="h-4 w-4" />
-            {t("settings.notifications")}
-          </TabsTrigger>
-          <TabsTrigger value="appearance" className="gap-2">
-            <Palette className="h-4 w-4" />
-            {t("settings.appearance")}
-          </TabsTrigger>
+          <TabsTrigger value="profile"      className="gap-2"><User   className="h-4 w-4" />{t("settings.profile")}</TabsTrigger>
+          <TabsTrigger value="notifications" className="gap-2"><Bell   className="h-4 w-4" />{t("settings.notifications")}</TabsTrigger>
+          <TabsTrigger value="appearance"    className="gap-2"><Palette className="h-4 w-4" />{t("settings.appearance")}</TabsTrigger>
         </TabsList>
 
-        {/* Profile Tab */}
+        {/* ── Profile Tab ─────────────────────────────────────────────────── */}
         <TabsContent value="profile">
           <div className="space-y-6">
             <Card>
               <CardHeader>
                 <CardTitle>{t("profile.profileInfo")}</CardTitle>
-                <CardDescription>
-                  {t("profile.updateDetails")}
-                </CardDescription>
+                <CardDescription>{t("profile.updateDetails")}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
                 {/* Avatar */}
                 <div className="flex items-center gap-4">
                   <Avatar className="h-20 w-20">
-                    <AvatarImage src={avatarPreview || user?.avatarUrl || currentUser?.avatar} />
+                    <AvatarImage src={displayAvatar} />
                     <AvatarFallback className="text-2xl">
-                      {user?.name?.charAt(0) || currentUser?.name?.charAt(0)}
+                      {displayName.charAt(0)}
                     </AvatarFallback>
                   </Avatar>
                   <div>
@@ -139,19 +137,21 @@ export default function ProfilePage() {
                       onChange={async (e) => {
                         const file = e.target.files?.[0];
                         if (!file) return;
-                        
                         if (file.size > 5 * 1024 * 1024) {
                           toast.error("ไฟล์ใหญ่เกินไป สูงสุด 5MB");
                           return;
                         }
-                        
                         setIsUploading(true);
                         try {
-                          const objectUrl = URL.createObjectURL(file);
-                          setAvatarPreview(objectUrl);
+                          setAvatarPreview(URL.createObjectURL(file));
                           await uploadAvatar(file);
                           toast.success("อัปโหลดรูปโปรไฟล์สำเร็จ");
-                        } catch (err) {
+                          // refresh profile
+                          if (user?.id) {
+                            const updated = await employeesApi.get(user.id);
+                            setProfile(updated);
+                          }
+                        } catch {
                           setAvatarPreview(null);
                           toast.error("อัปโหลดไม่สำเร็จ");
                         } finally {
@@ -160,88 +160,85 @@ export default function ProfilePage() {
                       }}
                     />
                     <Button
-                      variant="outline"
-                      size="sm"
+                      variant="outline" size="sm"
                       onClick={() => fileInputRef.current?.click()}
                       disabled={isUploading}
                     >
                       {isUploading ? (
-                        <>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          {t("common.uploading")}
-                        </>
+                        <><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t("common.uploading")}</>
                       ) : (
                         t("profile.changePhoto")
                       )}
                     </Button>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      JPG, PNG or WebP. Max 5MB.
-                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">JPG, PNG or WebP. Max 5MB.</p>
                   </div>
                 </div>
 
                 <Separator />
 
-                {/* Form Fields */}
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="name">{t("profile.fullName")}</Label>
-                    <Input id="name" defaultValue={currentUser.name} />
+                {/* Form fields */}
+                {isLoadingProfile ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading profile…
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="email">{t("profile.email")}</Label>
-                    <Input
-                      id="email"
-                      type="email"
-                      defaultValue={currentUser.email}
-                    />
+                ) : (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="name">{t("profile.fullName")}</Label>
+                      <Input id="name" defaultValue={displayName} readOnly className="bg-muted/30" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="email">{t("profile.email")}</Label>
+                      <Input id="email" type="email" defaultValue={displayEmail} readOnly className="bg-muted/30" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="role">{t("profile.role")}</Label>
+                      <Input id="role" defaultValue={displayRole} readOnly className="bg-muted/30" />
+                    </div>
+                    {profile?.department && (
+                      <div className="space-y-2">
+                        <Label>Department</Label>
+                        <Input defaultValue={profile.department} readOnly className="bg-muted/30" />
+                      </div>
+                    )}
+                    <div className="space-y-2">
+                      <Label htmlFor="employeeCode">Employee Code</Label>
+                      <Input id="employeeCode" defaultValue={profile?.employeeCode ?? "—"} readOnly className="bg-muted/30 font-mono" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="timezone">{t("profile.timezone")}</Label>
+                      <Select defaultValue="utc+7">
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="utc-8">Pacific Time (UTC-8)</SelectItem>
+                          <SelectItem value="utc-5">Eastern Time (UTC-5)</SelectItem>
+                          <SelectItem value="utc+0">UTC</SelectItem>
+                          <SelectItem value="utc+7">Bangkok (UTC+7)</SelectItem>
+                          <SelectItem value="utc+9">Tokyo (UTC+9)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="role">{t("profile.role")}</Label>
-                    <Input
-                      id="role"
-                      defaultValue="Product Manager"
-                      placeholder="Your job title"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="timezone">{t("profile.timezone")}</Label>
-                    <Select defaultValue="utc+7">
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="utc-8">Pacific Time (UTC-8)</SelectItem>
-                        <SelectItem value="utc-5">Eastern Time (UTC-5)</SelectItem>
-                        <SelectItem value="utc+0">UTC</SelectItem>
-                        <SelectItem value="utc+7">Bangkok (UTC+7)</SelectItem>
-                        <SelectItem value="utc+9">Tokyo (UTC+9)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
+                )}
 
                 <Separator />
 
-                {/* Language Setting */}
+                {/* Language */}
                 <div className="space-y-3">
                   <Label className="flex items-center gap-2">
                     <Globe className="h-4 w-4" />
                     {t("common.language")}
                   </Label>
                   <Select value={language} onValueChange={(v) => setLanguage(v as Language)}>
-                    <SelectTrigger className="w-[200px]">
-                      <SelectValue />
-                    </SelectTrigger>
+                    <SelectTrigger className="w-[200px]"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="en">English</SelectItem>
                       <SelectItem value="th">ไทย (Thai)</SelectItem>
                     </SelectContent>
                   </Select>
-                </div>
-
-                <div className="flex justify-end">
-                  <Button>{t("common.save")}</Button>
                 </div>
               </CardContent>
             </Card>
@@ -250,17 +247,13 @@ export default function ProfilePage() {
             <Card>
               <CardHeader>
                 <CardTitle>{t("profile.security")}</CardTitle>
-                <CardDescription>
-                  Manage your password and security settings.
-                </CardDescription>
+                <CardDescription>Manage your password and security settings.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-medium">{t("profile.password")}</p>
-                    <p className="text-sm text-muted-foreground">
-                      Last changed 30 days ago
-                    </p>
+                    <p className="text-sm text-muted-foreground">Keep your account secure</p>
                   </div>
                   <Button variant="outline" onClick={() => setShowPasswordModal(true)}>
                     {t("profile.changePassword")}
@@ -270,9 +263,7 @@ export default function ProfilePage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-medium">{t("profile.twoFactor")}</p>
-                    <p className="text-sm text-muted-foreground">
-                      Add an extra layer of security
-                    </p>
+                    <p className="text-sm text-muted-foreground">Add an extra layer of security</p>
                   </div>
                   <Switch />
                 </div>
@@ -280,9 +271,7 @@ export default function ProfilePage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-medium">{t("profile.activeSessions")}</p>
-                    <p className="text-sm text-muted-foreground">
-                      Manage your active sessions
-                    </p>
+                    <p className="text-sm text-muted-foreground">Manage your active sessions</p>
                   </div>
                   <Button variant="outline">View Sessions</Button>
                 </div>
@@ -291,127 +280,69 @@ export default function ProfilePage() {
           </div>
         </TabsContent>
 
-        {/* Notifications Tab */}
+        {/* ── Notifications Tab ────────────────────────────────────────────── */}
         <TabsContent value="notifications">
           <Card>
             <CardHeader>
               <CardTitle>{t("settings.notifications")}</CardTitle>
-              <CardDescription>
-                Choose how and when you want to be notified.
-              </CardDescription>
+              <CardDescription>Choose how and when you want to be notified.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              {/* Channels */}
               <div>
                 <h3 className="mb-3 text-sm font-medium">Notification Channels</h3>
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium">Email Notifications</p>
-                      <p className="text-sm text-muted-foreground">
-                        Receive notifications via email
-                      </p>
+                  {(["email", "desktop"] as const).map((key) => (
+                    <div key={key} className="flex items-center justify-between">
+                      <div>
+                        <p className="font-medium capitalize">{key} Notifications</p>
+                        <p className="text-sm text-muted-foreground">
+                          {key === "email" ? "Receive notifications via email" : "Show browser notifications"}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={notifications[key]}
+                        onCheckedChange={(v) => setNotifications({ ...notifications, [key]: v })}
+                      />
                     </div>
-                    <Switch
-                      checked={notifications.email}
-                      onCheckedChange={(checked) =>
-                        setNotifications({ ...notifications, email: checked })
-                      }
-                    />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium">Desktop Notifications</p>
-                      <p className="text-sm text-muted-foreground">
-                        Show browser notifications
-                      </p>
-                    </div>
-                    <Switch
-                      checked={notifications.desktop}
-                      onCheckedChange={(checked) =>
-                        setNotifications({ ...notifications, desktop: checked })
-                      }
-                    />
-                  </div>
+                  ))}
                 </div>
               </div>
-
               <Separator />
-
-              {/* Activity Notifications */}
               <div>
                 <h3 className="mb-3 text-sm font-medium">Activity Notifications</h3>
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium">Task Assigned</p>
-                      <p className="text-sm text-muted-foreground">
-                        When someone assigns you a task
-                      </p>
-                    </div>
-                    <Switch
-                      checked={notifications.taskAssigned}
-                      onCheckedChange={(checked) =>
-                        setNotifications({ ...notifications, taskAssigned: checked })
-                      }
-                    />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium">Task Completed</p>
-                      <p className="text-sm text-muted-foreground">
-                        When tasks you&apos;re watching are completed
-                      </p>
-                    </div>
-                    <Switch
-                      checked={notifications.taskCompleted}
-                      onCheckedChange={(checked) =>
-                        setNotifications({ ...notifications, taskCompleted: checked })
-                      }
-                    />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium">Mentions</p>
-                      <p className="text-sm text-muted-foreground">
-                        When someone mentions you in a comment
-                      </p>
-                    </div>
-                    <Switch
-                      checked={notifications.mentions}
-                      onCheckedChange={(checked) =>
-                        setNotifications({ ...notifications, mentions: checked })
-                      }
-                    />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium">Weekly Digest</p>
-                      <p className="text-sm text-muted-foreground">
-                        Get a weekly summary of your tasks
-                      </p>
-                    </div>
-                    <Switch
-                      checked={notifications.weeklyDigest}
-                      onCheckedChange={(checked) =>
-                        setNotifications({ ...notifications, weeklyDigest: checked })
-                      }
-                    />
-                  </div>
+                  {(["taskAssigned", "taskCompleted", "mentions", "weeklyDigest"] as const).map((key) => {
+                    const labels: Record<typeof key, [string, string]> = {
+                      taskAssigned:  ["Task Assigned",  "When someone assigns you a task"],
+                      taskCompleted: ["Task Completed", "When tasks you're watching are completed"],
+                      mentions:      ["Mentions",        "When someone mentions you in a comment"],
+                      weeklyDigest:  ["Weekly Digest",   "Get a weekly summary of your tasks"],
+                    };
+                    return (
+                      <div key={key} className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">{labels[key][0]}</p>
+                          <p className="text-sm text-muted-foreground">{labels[key][1]}</p>
+                        </div>
+                        <Switch
+                          checked={notifications[key]}
+                          onCheckedChange={(v) => setNotifications({ ...notifications, [key]: v })}
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* Appearance Tab */}
+        {/* ── Appearance Tab ────────────────────────────────────────────────── */}
         <TabsContent value="appearance">
           <Card>
             <CardHeader>
               <CardTitle>{t("settings.appearance")}</CardTitle>
-              <CardDescription>
-                Customize how the app looks and feels.
-              </CardDescription>
+              <CardDescription>Customize how the app looks and feels.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="space-y-3">
@@ -434,42 +365,27 @@ export default function ProfilePage() {
                   </div>
                 </div>
               </div>
-
               <Separator />
-
               <div className="space-y-3">
                 <Label>Accent Color</Label>
                 <div className="flex gap-2">
-                  {["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"].map(
-                    (color) => (
-                      <button
-                        key={color}
-                        className="h-8 w-8 rounded-full ring-2 ring-transparent ring-offset-2 ring-offset-background transition-all hover:ring-primary focus:ring-primary"
-                        style={{ backgroundColor: color }}
-                      />
-                    )
-                  )}
+                  {["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899"].map((c) => (
+                    <button key={c} className="h-8 w-8 rounded-full ring-2 ring-transparent ring-offset-2 ring-offset-background transition-all hover:ring-primary" style={{ backgroundColor: c }} />
+                  ))}
                 </div>
               </div>
-
               <Separator />
-
               <div className="flex items-center justify-between">
                 <div>
                   <p className="font-medium">Compact Mode</p>
-                  <p className="text-sm text-muted-foreground">
-                    Reduce spacing and padding
-                  </p>
+                  <p className="text-sm text-muted-foreground">Reduce spacing and padding</p>
                 </div>
                 <Switch />
               </div>
-
               <div className="flex items-center justify-between">
                 <div>
                   <p className="font-medium">Show Task IDs</p>
-                  <p className="text-sm text-muted-foreground">
-                    Display task identifiers
-                  </p>
+                  <p className="text-sm text-muted-foreground">Display task identifiers</p>
                 </div>
                 <Switch />
               </div>
@@ -478,7 +394,7 @@ export default function ProfilePage() {
         </TabsContent>
       </Tabs>
 
-      {/* Password Change Dialog */}
+      {/* ── Password Dialog ──────────────────────────────────────────────────── */}
       <Dialog open={showPasswordModal} onOpenChange={setShowPasswordModal}>
         <DialogContent>
           <DialogHeader>
@@ -490,10 +406,7 @@ export default function ProfilePage() {
           <form
             onSubmit={handlePasswordSubmit(async (data) => {
               try {
-                await apiChangePassword({
-                  currentPassword: data.currentPassword,
-                  newPassword: data.newPassword,
-                });
+                await apiChangePassword({ currentPassword: data.currentPassword, newPassword: data.newPassword });
                 toast.success("เปลี่ยนรหัสผ่านสำเร็จ");
                 setShowPasswordModal(false);
                 resetPasswordForm();
@@ -503,51 +416,24 @@ export default function ProfilePage() {
             })}
             className="space-y-4"
           >
-            <div className="space-y-2">
-              <Label htmlFor="currentPassword">{t("profile.currentPassword")}</Label>
-              <Input
-                id="currentPassword"
-                type="password"
-                {...registerPassword("currentPassword")}
-              />
-              {passwordErrors.currentPassword && (
-                <p className="text-sm text-red-500">
-                  {passwordErrors.currentPassword.message}
-                </p>
-              )}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="newPassword">{t("profile.newPassword")}</Label>
-              <Input
-                id="newPassword"
-                type="password"
-                {...registerPassword("newPassword")}
-              />
-              {passwordErrors.newPassword && (
-                <p className="text-sm text-red-500">
-                  {passwordErrors.newPassword.message}
-                </p>
-              )}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="confirmPassword">{t("profile.confirmPassword")}</Label>
-              <Input
-                id="confirmPassword"
-                type="password"
-                {...registerPassword("confirmPassword")}
-              />
-              {passwordErrors.confirmPassword && (
-                <p className="text-sm text-red-500">
-                  {passwordErrors.confirmPassword.message}
-                </p>
-              )}
-            </div>
+            {(["currentPassword","newPassword","confirmPassword"] as const).map((field) => {
+              const labels: Record<typeof field, string> = {
+                currentPassword: t("profile.currentPassword"),
+                newPassword:     t("profile.newPassword"),
+                confirmPassword: t("profile.confirmPassword"),
+              };
+              return (
+                <div key={field} className="space-y-2">
+                  <Label htmlFor={field}>{labels[field]}</Label>
+                  <Input id={field} type="password" {...registerPassword(field)} />
+                  {passwordErrors[field] && (
+                    <p className="text-sm text-red-500">{passwordErrors[field]?.message}</p>
+                  )}
+                </div>
+              );
+            })}
             <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setShowPasswordModal(false)}
-              >
+              <Button type="button" variant="outline" onClick={() => setShowPasswordModal(false)}>
                 {t("common.cancel")}
               </Button>
               <Button type="submit" disabled={isChangingPassword}>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { format, startOfMonth, endOfMonth, startOfWeek, endOfWeek, addDays, addMonths, subMonths, isSameMonth, isSameDay, isWithinInterval, parseISO, setHours, setMinutes } from "date-fns";
 import { th, enUS } from "date-fns/locale";
 import { ChevronLeft, ChevronRight, Plus, Calendar as CalendarIcon, Clock, MapPin, Briefcase, Users, FileText, X, Check, ChevronDown } from "lucide-react";
@@ -41,9 +41,53 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
 import { useTaskStore } from "@/lib/store";
+import { useAuthStore } from "@/lib/auth-store";
 import { useHolidays } from "@/hooks/use-holidays";
-import type { Task, LeaveRecord, LeaveType, Priority } from "@/lib/types";
-import { calculatePlanFinish, storyPointsOptions } from "@/lib/types";
+import { tasksApi, type CalendarTaskRow } from "@/lib/api/tasks";
+import { taskTypesApi, type TaskType } from "@/lib/api/task-types";
+import { spacesApi } from "@/lib/api/spaces";
+import { listsApi, type List } from "@/lib/api/lists";
+import { leaveApi, type LeaveRequest } from "@/lib/api/leave";
+import type { Priority } from "@/lib/types";
+
+// Frontend leave type (UI only)
+type LeaveType = "annual" | "sick" | "personal" | "wfh" | "other";
+interface LeaveRecord {
+  id: string;
+  displayId: string;
+  employeeId: string;
+  type: LeaveType;
+  startDate: Date;
+  endDate: Date;
+  note?: string;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  createdAt: Date;
+}
+
+// Map frontend leave type to API leave type
+const mapLeaveTypeToApi = (type: LeaveType): LeaveRequest["leaveType"] => {
+  switch (type) {
+    case "annual": return "annual";
+    case "sick": return "sick";
+    case "personal": return "personal";
+    case "wfh": return "personal"; // WFH mapped to personal for now
+    case "other": return "unpaid";
+    default: return "annual";
+  }
+};
+
+// Map API leave type to frontend leave type (for display)
+const mapApiTypeToFrontend = (apiType: string): LeaveType => {
+  switch (apiType) {
+    case "annual": return "annual";
+    case "sick": return "sick";
+    case "personal": return "personal";
+    case "maternity": return "personal";
+    case "ordain": return "personal";
+    case "unpaid": return "other";
+    default: return "annual";
+  }
+};
 
 // Leave type colors
 const leaveTypeColors: Record<LeaveType, { bg: string; text: string; label: string }> = {
@@ -67,9 +111,19 @@ const timeOptions = Array.from({ length: 48 }, (_, i) => {
 export default function MyCalendarPage() {
   const { t, language } = useTranslation();
   const locale = language === "th" ? th : enUS;
-  
-  const { tasks, spaces, folders, lists, taskTypes, holidaySettings, addTask, updateTask } = useTaskStore();
-  
+
+  // real auth user
+  const authUser    = useAuthStore((s) => s.user);
+
+  // holiday settings still come from store (loaded on app init)
+  const { holidaySettings } = useTaskStore();
+
+  // real API state
+  const [calendarTasks, setCalendarTasks] = useState<CalendarTaskRow[]>([]);
+  const [taskTypes,     setTaskTypes]     = useState<TaskType[]>([]);
+  const [allLists,      setAllLists]      = useState<List[]>([]);
+  const [tasksLoading,  setTasksLoading]  = useState(false);
+
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -109,41 +163,68 @@ export default function MyCalendarPage() {
   // Local leaves state (would be in store in production)
   const [leaves, setLeaves] = useState<LeaveRecord[]>([]);
   const [leaveDaysCount, setLeaveDaysCount] = useState(0);
+  const [leaveLoading, setLeaveLoading] = useState(false);
 
   const { getWorkingDays } = useHolidays();
 
-  // Get current user's tasks (mock user-1)
-  const currentUserId = "user-1";
+  // real current user
+  const currentUserId = authUser?.id ?? "";
   
-  // Get private task types
-  const privateTaskTypes = useMemo(() => {
-    return taskTypes.filter(tt => tt.category === "private");
-  }, [taskTypes]);
-  
-  // Get private spaces for current user
-  const privateSpaces = useMemo(() => {
-    return spaces.filter(s => s.type === "private" && s.ownerId === currentUserId);
-  }, [spaces]);
-  
-  // Get folders for private spaces
-  const privateFolders = useMemo(() => {
-    const spaceIds = privateSpaces.map(s => s.id);
-    return folders.filter(f => spaceIds.includes(f.spaceId));
-  }, [folders, privateSpaces]);
-  
-  // Get my tasks (assigned to me)
-  const myTasks = useMemo(() => {
-    return tasks.filter(task => task.assigneeIds?.includes(currentUserId));
-  }, [tasks]);
-  
-  // Get tasks with plan dates
-  const plannedTasks = useMemo(() => {
-    return myTasks.filter(t => t.planStart && t.duration).map(task => {
-      const planStart = new Date(task.planStart!);
-      const planFinish = calculatePlanFinish(task.planStart, task.duration);
-      return { ...task, planStart, planFinish: planFinish || planStart };
-    });
-  }, [myTasks]);
+  // ── Load task types and lists on mount ────────────────────────────────────
+  useEffect(() => {
+    taskTypesApi.list().then(setTaskTypes).catch(console.error);
+    spacesApi.list()
+      .then((spaces) => Promise.all(spaces.map((s) => listsApi.list(s.id))))
+      .then((arrays) => setAllLists(arrays.flat()))
+      .catch(console.error);
+  }, []);
+
+  // ── Load calendar tasks when month changes ────────────────────────────────
+  useEffect(() => {
+    if (!currentUserId) return;
+    const startStr = format(startOfMonth(currentMonth), "yyyy-MM-dd");
+    const endStr   = format(endOfMonth(currentMonth),   "yyyy-MM-dd");
+    setTasksLoading(true);
+    tasksApi.calendar(startStr, endStr)
+      .then((rows) => setCalendarTasks(rows.filter((t) => t.assignee_id === currentUserId)))
+      .catch(console.error)
+      .finally(() => setTasksLoading(false));
+  }, [currentMonth, currentUserId]);
+
+  // ── Load leave requests when month changes ────────────────────────────────
+  useEffect(() => {
+    if (!currentUserId) return;
+    setLeaveLoading(true);
+    leaveApi.list({ employee_id: currentUserId, year: currentMonth.getFullYear() })
+      .then((data) => {
+        const mapped: LeaveRecord[] = data.map((l) => ({
+          id: l.id,
+          displayId: l.displayId,
+          employeeId: l.employeeId,
+          type: mapApiTypeToFrontend(l.leaveType),
+          startDate: new Date(l.startDate),
+          endDate: new Date(l.endDate),
+          note: l.reason || undefined,
+          status: l.status,
+          createdAt: new Date(l.createdAt),
+        }));
+        setLeaves(mapped);
+      })
+      .catch(console.error)
+      .finally(() => setLeaveLoading(false));
+  }, [currentMonth, currentUserId]);
+
+  // Private task types (category = "private")
+  const privateTaskTypes = useMemo(
+    () => taskTypes.filter((tt) => tt.category === "private"),
+    [taskTypes],
+  );
+
+  // Tasks with plan dates for calendar display
+  const plannedTasks = useMemo(
+    () => calendarTasks.filter((t) => !!t.plan_start),
+    [calendarTasks],
+  );
   
   // Get current year holidays
   const currentYearHolidays = useMemo(() => {
@@ -185,10 +266,13 @@ export default function MyCalendarPage() {
     return currentYearHolidays.find(h => isSameDay(new Date(h.date), day));
   };
 
-  // Check if day is weekend
+  // Check if day is weekend (use day-of-week number: 0=Sun, 6=Sat)
   const isWeekend = (day: Date) => {
-    const dayName = format(day, "EEEE").toLowerCase();
-    return weekendDays.includes(dayName as typeof weekendDays[number]);
+    const dow = day.getDay(); // 0=Sun, 6=Sat
+    if (weekendDays.length > 0 && typeof weekendDays[0] === "number") {
+      return (weekendDays as number[]).includes(dow);
+    }
+    return dow === 0 || dow === 6; // default Sat/Sun
   };
 
   // Get leave for a day
@@ -198,12 +282,13 @@ export default function MyCalendarPage() {
     );
   };
 
-  // Get tasks for a specific day
+  // Get tasks for a specific day (CalendarTaskRow uses plan_start / plan_finish)
   const getTasksForDay = (day: Date) => {
-    return plannedTasks.filter(task => {
-      const start = new Date(task.planStart);
+    return plannedTasks.filter((task) => {
+      if (!task.plan_start) return false;
+      const start = new Date(task.plan_start);
       start.setHours(0, 0, 0, 0);
-      const end = new Date(task.planFinish);
+      const end = task.plan_finish ? new Date(task.plan_finish) : new Date(start);
       end.setHours(23, 59, 59, 999);
       const checkDay = new Date(day);
       checkDay.setHours(12, 0, 0, 0);
@@ -212,57 +297,58 @@ export default function MyCalendarPage() {
   };
 
   // Get task type info
-  const getTaskTypeInfo = (taskTypeId: string) => {
-    return taskTypes.find(tt => tt.id === taskTypeId);
+  const getTaskTypeInfo = (taskTypeId: string | null | undefined) => {
+    if (!taskTypeId) return undefined;
+    return taskTypes.find((tt) => tt.id === taskTypeId);
   };
 
-  // Handle create task
-  const handleCreateTask = () => {
-    if (!taskTitle.trim()) return;
-    
-    // Find or create a private space/list
-    let targetListId = "";
-    if (privateSpaces.length > 0) {
-      // Get first list from first private space
-      const spaceId = privateSpaces[0].id;
-      const spaceLists = lists.filter(l => l.spaceId === spaceId);
-      if (spaceLists.length > 0) {
-        targetListId = spaceLists[0].id;
-      }
+  // Handle create task (real API)
+  const handleCreateTask = async () => {
+    if (!taskTitle.trim() || !currentUserId) return;
+
+    // Pick first available list
+    const targetList = allLists[0];
+    if (!targetList) {
+      alert(language === "th" ? "ไม่พบ List สำหรับสร้างงาน" : "No list available to create task");
+      return;
     }
-    
+
     // Calculate duration in days
-    const durationDays = Math.max(1, Math.ceil((taskEndDate.getTime() - taskStartDate.getTime()) / (1000 * 60 * 60 * 24)) + 1);
-    
-    // Use auto points from task type
-    const pointsValue = autoPoints > 0 ? autoPoints as typeof storyPointsOptions[number] : undefined;
-    
-    const newTask: Task = {
-      id: `task-${Date.now()}`,
-      taskId: `PRIV-${String(Date.now()).slice(-4)}`,
-      title: taskTitle.trim(),
-      description: taskDescription.trim() || undefined,
-      listId: targetListId,
-      statusId: "status-1", // To Do
-      priority: taskPriority,
-      storyPoints: pointsValue,
-      taskTypeId: taskTypeId || undefined,
-      assigneeIds: [currentUserId],
-      planStart: taskStartDate,
-      duration: durationDays,
-      timeEstimate: 60, // 1 hour
-      order: Date.now(),
-      createdAt: new Date(),
-      createdBy: currentUserId,
-    };
-    
-    addTask(newTask);
+    const durationDays = Math.max(
+      1,
+      Math.ceil((taskEndDate.getTime() - taskStartDate.getTime()) / (1000 * 60 * 60 * 24)) + 1,
+    );
+
+    try {
+      await tasksApi.create({
+        title:            taskTitle.trim(),
+        description:      taskDescription.trim() || undefined,
+        listId:           targetList.id,
+        assigneeId:       currentUserId,
+        priority:         taskPriority,
+        storyPoints:      autoPoints > 0 ? autoPoints : undefined,
+        taskTypeId:       taskTypeId || undefined,
+        planStart:        format(taskStartDate, "yyyy-MM-dd"),
+        durationDays,
+        timeEstimateHours: 1,
+      });
+      // Refresh calendar tasks
+      const startStr = format(startOfMonth(currentMonth), "yyyy-MM-dd");
+      const endStr   = format(endOfMonth(currentMonth),   "yyyy-MM-dd");
+      const rows = await tasksApi.calendar(startStr, endStr);
+      setCalendarTasks(rows.filter((t) => t.assignee_id === currentUserId));
+    } catch (err) {
+      console.error("Failed to create task:", err);
+    }
+
     resetTaskForm();
     setShowCreateDialog(false);
   };
 
-  // Handle create leave
+  // Handle create leave (using real API)
   const handleCreateLeave = async () => {
+    if (!currentUserId) return;
+
     const startStr = format(leaveStartDate, "yyyy-MM-dd");
     const endStr = format(leaveEndDate, "yyyy-MM-dd");
     
@@ -275,18 +361,33 @@ export default function MyCalendarPage() {
       setLeaveDaysCount(diffDays);
     }
     
-    const newLeave: LeaveRecord = {
-      id: `leave-${Date.now()}`,
-      userId: currentUserId,
-      type: leaveType,
-      startDate: leaveStartDate,
-      endDate: leaveEndDate,
-      note: leaveNote || undefined,
-      approved: true,
-      createdAt: new Date(),
-    };
+    try {
+      await leaveApi.create({
+        leaveType: mapLeaveTypeToApi(leaveType),
+        startDate: startStr,
+        endDate: endStr,
+        reason: leaveNote || undefined,
+      });
+      
+      // Refresh leave requests
+      const data = await leaveApi.list({ employee_id: currentUserId, year: currentMonth.getFullYear() });
+      const mapped: LeaveRecord[] = data.map((l) => ({
+        id: l.id,
+        displayId: l.displayId,
+        employeeId: l.employeeId,
+        type: l.leaveType as LeaveType,
+        startDate: new Date(l.startDate),
+        endDate: new Date(l.endDate),
+        note: l.reason || undefined,
+        status: l.status,
+        createdAt: new Date(l.createdAt),
+      }));
+      setLeaves(mapped);
+    } catch (err) {
+      console.error("Failed to create leave request:", err);
+      return;
+    }
     
-    setLeaves(prev => [...prev, newLeave]);
     resetLeaveForm();
     setShowLeaveDialog(false);
   };
@@ -468,7 +569,7 @@ export default function MyCalendarPage() {
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <p className="text-[10px] text-red-600 dark:text-red-400 truncate mb-1">
-                            {language === "th" ? "Company Holiday" : "Company Holiday"}
+                            {holiday.name}
                           </p>
                         </TooltipTrigger>
                         <TooltipContent>
@@ -480,21 +581,22 @@ export default function MyCalendarPage() {
 
                   {/* Tasks */}
                   <div className="space-y-0.5">
-                    {dayTasks.slice(0, 3).map(task => {
-                      const taskType = getTaskTypeInfo(task.taskTypeId || "");
+                    {dayTasks.slice(0, 3).map((task) => {
+                      const barColor = task.status_color ?? "#3b82f6";
                       return (
                         <TooltipProvider key={task.id}>
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <div
                                 className="text-[10px] px-1.5 py-0.5 rounded truncate cursor-pointer"
-                                style={{ 
-                                  backgroundColor: taskType?.color ? `${taskType.color}20` : "#3b82f620",
-                                  color: taskType?.color || "#3b82f6"
+                                style={{
+                                  backgroundColor: `${barColor}20`,
+                                  color:           barColor,
                                 }}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  // Open task detail
+                                  // Navigate to task detail
+                                  window.location.href = `/task/${task.id}`;
                                 }}
                               >
                                 {task.title}
@@ -503,8 +605,15 @@ export default function MyCalendarPage() {
                             <TooltipContent>
                               <div className="space-y-1">
                                 <p className="font-medium">{task.title}</p>
-                                {task.storyPoints && <p className="text-xs">Points: {task.storyPoints}</p>}
-                                {taskType && <p className="text-xs">Type: {taskType.name}</p>}
+                                {task.story_points && (
+                                  <p className="text-xs">Points: {task.story_points}</p>
+                                )}
+                                {task.status_name && (
+                                  <p className="text-xs">Status: {task.status_name}</p>
+                                )}
+                                {task.list_name && (
+                                  <p className="text-xs">{task.list_name}</p>
+                                )}
                               </div>
                             </TooltipContent>
                           </Tooltip>
@@ -678,18 +787,18 @@ export default function MyCalendarPage() {
               </Select>
             </div>
 
-            {/* Folder Selection (if private spaces exist) */}
-            {privateFolders.length > 0 && (
+            {/* List selection */}
+            {allLists.length > 1 && (
               <div className="space-y-2">
-                <Label>{language === "th" ? "โฟลเดอร์" : "Folder"}</Label>
+                <Label>{language === "th" ? "List" : "List"}</Label>
                 <Select value={selectedFolderId} onValueChange={setSelectedFolderId}>
                   <SelectTrigger>
-                    <SelectValue placeholder={language === "th" ? "เลือกโฟลเดอร์" : "Select folder"} />
+                    <SelectValue placeholder={language === "th" ? "เลือก List" : "Select list"} />
                   </SelectTrigger>
                   <SelectContent>
-                    {privateFolders.map(folder => (
-                      <SelectItem key={folder.id} value={folder.id}>
-                        {folder.name}
+                    {allLists.map((list) => (
+                      <SelectItem key={list.id} value={list.id}>
+                        {list.name}
                       </SelectItem>
                     ))}
                   </SelectContent>

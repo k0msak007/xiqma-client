@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useRef, useEffect } from "react";
 import {
   DragDropContext,
   Droppable,
@@ -30,6 +30,8 @@ interface KanbanBoardProps {
   selectedTaskId?: string;
   onAddTask?: (statusId: string) => void;
   onAddStatus?: () => void;
+  onUpdateTask?: (taskId: string, updates: Partial<Task>) => Promise<void>;
+  onDeleteTask?: (taskId: string) => Promise<void>;
 }
 
 export function KanbanBoard({
@@ -40,8 +42,11 @@ export function KanbanBoard({
   selectedTaskId,
   onAddTask,
   onAddStatus,
+  onUpdateTask,
+  onDeleteTask,
 }: KanbanBoardProps) {
   const { updateTaskStatus, reorderTasks } = useListTaskStore();
+  const taskRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   // Group tasks by status
   const columns = useMemo(() => {
@@ -53,6 +58,16 @@ export function KanbanBoard({
     });
     return grouped;
   }, [tasks, statuses]);
+
+  // Auto-scroll to selected task
+  useEffect(() => {
+    if (selectedTaskId && taskRefs.current.has(selectedTaskId)) {
+      const taskElement = taskRefs.current.get(selectedTaskId);
+      if (taskElement) {
+        taskElement.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }
+  }, [selectedTaskId]);
 
   const handleDragEnd = (result: DropResult) => {
     const { destination, source, draggableId } = result;
@@ -183,7 +198,10 @@ export function KanbanBoard({
                         >
                           {(provided, snapshot) => (
                             <div
-                              ref={provided.innerRef}
+                              ref={(el) => {
+                                provided.innerRef(el);
+                                if (el) taskRefs.current.set(task.id, el);
+                              }}
                               {...provided.draggableProps}
                               {...provided.dragHandleProps}
                               className={cn(
@@ -195,6 +213,8 @@ export function KanbanBoard({
                                 onClick={() => onTaskClick(task.id)}
                                 isSelected={task.id === selectedTaskId}
                                 variant="board"
+                                onUpdate={onUpdateTask}
+                                onDelete={onDeleteTask}
                               />
                             </div>
                           )}

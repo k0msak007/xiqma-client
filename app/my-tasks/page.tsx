@@ -36,22 +36,27 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TaskDetail } from "@/components/task-detail";
 import { TaskTableRow } from "@/components/task-table-row";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { useTaskStore } from "@/lib/store";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 import { tasksApi, type MyTasksRow } from "@/lib/api/tasks";
 import { useAuthStore } from "@/lib/auth-store";
 import { cacheEmployee } from "@/lib/employee-cache";
+import { toast } from "sonner";
 import type { Priority, Status, Task } from "@/lib/types";
 
 type GroupByOption = "none" | "status" | "priority" | "dueDate" | "list";
 
 export default function MyTasksPage() {
   const searchParams = useSearchParams();
-  const selectedTaskId = searchParams.get("task");
+  const urlTaskId = searchParams.get("task");
 
-  const { setActiveTask } = useTaskStore();
+  const { navigation, setActiveTask } = useTaskStore();
   const { lists } = useWorkspaceStore();
   const user = useAuthStore((s) => s.user);
+
+  // Use store's activeTaskId or URL's task param
+  const selectedTaskId = urlTaskId || navigation.activeTaskId;
 
   const [apiTasks, setApiTasks] = useState<MyTasksRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -108,6 +113,7 @@ export default function MyTasksPage() {
       timeSpent: row.accumulated_minutes
         ? Number(row.accumulated_minutes)
         : undefined,
+      estimateProgress: row.estimate_progress != null ? Number(row.estimate_progress) : undefined,
       tags: row.tags || [],
       subtasks: Array.from(
         { length: Number(row.subtask_count || 0) },
@@ -139,6 +145,58 @@ export default function MyTasksPage() {
       order: Number(row.display_order) || 0,
     }));
   }, [apiTasks]);
+
+  // Handle task updates - call API and update local state
+  const handleTaskUpdate = async (taskId: string, updates: Partial<Task>) => {
+    try {
+      // Build API payload from Task type (camelCase to match backend schema)
+      const payload: any = {};
+      
+      if (updates.statusId !== undefined) payload.listStatusId = updates.statusId;
+      if (updates.priority !== undefined) payload.priority = updates.priority;
+      if (updates.storyPoints !== undefined) payload.storyPoints = updates.storyPoints;
+      if (updates.duration !== undefined) payload.durationDays = updates.duration;
+      if (updates.planStart !== undefined) payload.planStart = updates.planStart?.toISOString().split("T")[0];
+      if (updates.actualStart !== undefined) payload.startedAt = updates.actualStart?.toISOString();
+      if (updates.actualFinish !== undefined) payload.completedAt = updates.actualFinish?.toISOString();
+      if (updates.timeSpent !== undefined) payload.accumulatedMinutes = updates.timeSpent;
+      if (updates.taskTypeId !== undefined) payload.taskTypeId = updates.taskTypeId || null;
+      if (updates.estimateProgress !== undefined) payload.estimateProgress = updates.estimateProgress;
+      if (updates.assigneeId !== undefined) payload.assigneeId = updates.assigneeId || null;
+      
+      await tasksApi.update(taskId, payload);
+      
+      // Update local state
+      setApiTasks((prev) =>
+        prev.map((t) => {
+          if (t.id === taskId) {
+            return {
+              ...t,
+              ...payload,
+              updated_at: new Date().toISOString(),
+            };
+          }
+          return t;
+        })
+      );
+    } catch (err) {
+      console.error("Failed to update task:", err);
+      toast.error("Failed to save changes");
+    }
+  };
+
+  // Handle task delete
+  const handleTaskDelete = async (taskId: string) => {
+    try {
+      await tasksApi.delete(taskId);
+      toast.success("Task deleted");
+      // Remove from local state
+      setApiTasks((prev) => prev.filter((t) => t.id !== taskId));
+    } catch (err) {
+      console.error("Failed to delete task:", err);
+      toast.error("Failed to delete task");
+    }
+  };
 
   // Build status list from task data
   const allStatuses = useMemo(() => {
@@ -276,7 +334,7 @@ export default function MyTasksPage() {
         name: r.status_name!,
         color: r.status_color || "#6b7280",
         order: 0,
-        type: r.status_type || "open",
+        type: (r.status_type || "open") as Status["type"],
         pointCountType: "not_counted" as const,
       }));
     // Deduplicate
@@ -557,6 +615,8 @@ export default function MyTasksPage() {
                             onClick={() => setActiveTask(task.id)}
                             isSelected={task.id === selectedTaskId}
                             statuses={getStatusesForTask(task.listId)}
+                            onUpdate={handleTaskUpdate}
+                            onDelete={handleTaskDelete}
                           />
                         ))}
                       </tbody>
@@ -579,15 +639,20 @@ export default function MyTasksPage() {
         </div>
       </div>
 
-      {/* Task Detail Panel */}
-      {selectedTask && (
-        <div className="w-[400px] shrink-0">
-          <TaskDetail
-            task={selectedTask}
-            onClose={() => setActiveTask(undefined)}
-          />
-        </div>
-      )}
+      {/* Task Detail Panel - Drawer from right */}
+      <Sheet open={!!selectedTask} onOpenChange={(open) => !open && setActiveTask(undefined)}>
+        <SheetContent className="w-[400px] p-0">
+          {selectedTask && (
+            <TaskDetail
+              task={selectedTask}
+              onClose={() => setActiveTask(undefined)}
+              onTaskChange={(updated) => {
+                setActiveTask(updated);
+              }}
+            />
+          )}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

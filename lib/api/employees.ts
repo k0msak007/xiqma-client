@@ -60,6 +60,7 @@ export interface ChangePasswordPayload {
 }
 
 export const employeesApi = {
+  listAll: () => api.get<{ rows: Employee[] }>("/employees/all").then((res) => res.rows),
   list: (params?: { search?: string; department?: string; isActive?: boolean; page?: number; limit?: number }) => {
     const query = new URLSearchParams();
     if (params?.search)     query.set("search", params.search);

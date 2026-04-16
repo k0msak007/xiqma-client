@@ -3,7 +3,7 @@
 **Base URL:** `http://localhost:3000/api`
 **Content-Type:** `application/json`
 
-> อัปเดตล่าสุด: 2026-04-14
+> อัปเดตล่าสุด: 2026-04-16
 > สถานะ: ✅ พร้อมใช้ | 🚧 กำลังพัฒนา | 📋 วางแผน
 
 ---
@@ -299,7 +299,7 @@ X-RateLimit-Reset: 1712636400
 |---|---|---|---|
 | `search` | string | — | ค้นหาชื่อหรือ email |
 | `department` | string | — | filter ตาม department |
-| `isActive` | boolean | `true` | |
+| `isActive` | boolean | — | `true` \| `false` — ถ้าไม่ระบุ คืนทุกสถานะ |
 | `page` | number | `1` | |
 | `limit` | number | `20` | max 100 |
 
@@ -1663,6 +1663,11 @@ X-RateLimit-Reset: 1712636400
 
 **Auth required:** ✅ Bearer token | member ของ space หรือ admin
 
+### Request Body
+```json
+{ "name": "Engineering Team", "color": "#8b5cf6", "icon": "🔧", "displayOrder": 2 }
+```
+
 ---
 
 ## DELETE /spaces/:id ✅
@@ -1689,6 +1694,11 @@ X-RateLimit-Reset: 1712636400
 { "employeeIds": ["uuid1", "uuid2"] }
 ```
 
+### Errors
+| Code | HTTP | เงื่อนไข |
+|---|---|---|
+| `NOT_FOUND` | 404 | employee ไม่มีหรือ inactive |
+
 ---
 
 ## DELETE /spaces/:id/members/:employeeId ✅
@@ -1710,6 +1720,21 @@ X-RateLimit-Reset: 1712636400
 |---|---|---|---|
 | `spaceId` | uuid | ✅ | |
 | `includeArchived` | boolean | ❌ | default `false` |
+
+### Response 200
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "uuid", "name": "Sprint 1", "spaceId": "uuid",
+      "color": null, "displayOrder": 1,
+      "isArchived": false, "archivedAt": null,
+      "listCount": 3, "createdAt": "2026-04-14T00:00:00Z"
+    }
+  ]
+}
+```
 
 ---
 
@@ -1739,6 +1764,11 @@ X-RateLimit-Reset: 1712636400
 Archive folder (ซ่อนจาก sidebar)
 
 **Auth required:** ✅ Bearer token
+
+### Response 200
+```json
+{ "success": true, "message": "archive folder สำเร็จ", "data": { "isArchived": true, "archivedAt": "2026-04-14T..." } }
+```
 
 ---
 
@@ -1781,11 +1811,14 @@ Restore folder ออกจาก archive
   "success": true,
   "data": [
     {
-      "id": "uuid", "name": "Backlog",
+      "id": "uuid", "name": "Backlog", "spaceId": "uuid", "folderId": null,
+      "color": null, "displayOrder": 1,
       "taskCount": 12, "doneCount": 5,
       "statuses": [
-        { "id": "uuid", "name": "Open", "color": "#6b7280", "type": "open", "displayOrder": 1 }
-      ]
+        { "id": "uuid", "name": "Open", "color": "#6b7280", "type": "open", "displayOrder": 1 },
+        { "id": "uuid", "name": "In Progress", "color": "#3b82f6", "type": "in_progress", "displayOrder": 2 }
+      ],
+      "createdAt": "2026-04-14T00:00:00Z"
     }
   ]
 }
@@ -1795,13 +1828,18 @@ Restore folder ออกจาก archive
 
 ## POST /lists ✅
 
-สร้าง list ใหม่ — auto-seed 5 statuses (Open → In Progress → Review → Done → Closed)
+สร้าง list ใหม่ — auto-seed 5 statuses ทันที (Open → In Progress → Review → Done → Closed)
 
 **Auth required:** ✅ Bearer token | member ของ space
 
 ### Request Body
 ```json
-{ "name": "Backlog", "spaceId": "uuid", "folderId": "uuid" }
+{ "name": "Backlog", "spaceId": "uuid", "folderId": "uuid", "color": null }
+```
+
+### Response 201
+```json
+{ "success": true, "message": "สร้าง list สำเร็จ", "data": { "id": "uuid", "name": "Backlog", ... } }
 ```
 
 ---
@@ -1810,11 +1848,15 @@ Restore folder ออกจาก archive
 
 แก้ชื่อ/สี/ลำดับ list
 
+**Auth required:** ✅ Bearer token
+
 ---
 
 ## DELETE /lists/:id ✅
 
 ลบ list — block ถ้ายังมี active task
+
+**Auth required:** ✅ Bearer token
 
 ### Errors
 | Code | HTTP | เงื่อนไข |
@@ -1825,18 +1867,38 @@ Restore folder ออกจาก archive
 
 ## GET /lists/:id/statuses ✅
 
-ดึง status columns ของ list
+ดึง status columns ของ list เรียงตาม displayOrder
+
+**Auth required:** ✅ Bearer token
+
+### Response 200
+```json
+{
+  "success": true,
+  "data": [
+    { "id": "uuid", "listId": "uuid", "name": "Open", "color": "#6b7280", "type": "open", "displayOrder": 1 }
+  ]
+}
+```
 
 ---
 
 ## POST /lists/:id/statuses ✅
 
-เพิ่ม status column ใหม่
+เพิ่ม status column ใหม่ใน list
+
+**Auth required:** ✅ Bearer token
 
 ### Request Body
 ```json
 { "name": "QA", "color": "#ec4899", "type": "review" }
 ```
+
+| Field | Type | Required | หมายเหตุ |
+|---|---|---|---|
+| `name` | string | ✅ | |
+| `color` | string | ✅ | hex color |
+| `type` | string | ✅ | `open` \| `in_progress` \| `review` \| `done` \| `closed` |
 
 ---
 
@@ -1844,9 +1906,11 @@ Restore folder ออกจาก archive
 
 เรียงลำดับ status columns ใหม่ (drag & drop)
 
+**Auth required:** ✅ Bearer token
+
 ### Request Body
 ```json
-{ "orderedIds": ["uuid1", "uuid2", "uuid3"] }
+{ "orderedIds": ["uuid-open", "uuid-inprog", "uuid-qa", "uuid-done", "uuid-closed"] }
 ```
 
 ---
@@ -1855,11 +1919,25 @@ Restore folder ออกจาก archive
 
 แก้ชื่อ/สี/ประเภทของ status column
 
+**Auth required:** ✅ Bearer token
+
+### Request Body
+```json
+{ "name": "QA Testing", "color": "#f97316", "type": "review" }
+```
+
+### Errors
+| Code | HTTP | เงื่อนไข |
+|---|---|---|
+| `NOT_FOUND` | 404 | statusId ไม่อยู่ใน list นี้ |
+
 ---
 
 ## DELETE /lists/:id/statuses/:statusId ✅
 
 ลบ status column — block ถ้ายังมี task ใช้ status นี้
+
+**Auth required:** ✅ Bearer token
 
 ### Errors
 | Code | HTTP | เงื่อนไข |
@@ -2142,16 +2220,50 @@ Restore folder ออกจาก archive
 
 ---
 
+## GET /api/tasks/time/running ✅
+
+ดู time session ที่กำลังทำงานทั้งหมดของ user ปัจจุบัน
+
+**Auth required:** ✅ Bearer token
+
+### Response
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "uuid",
+      "taskId": "uuid",
+      "startedAt": "2026-04-16T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
 ## POST /api/tasks/:id/time/start ✅
 
 เริ่มจับเวลาทำงานของ task นี้
 
-**Auth required:** ✅ Bearer token | assignee
+**Auth required:** ✅ Bearer token | assignee หรือ admin
 
-### Errors
-| Code | HTTP | เงื่อนไข |
-|---|---|---|
-| `SESSION_ALREADY_RUNNING` | 409 | มี time session ค้างอยู่สำหรับ user นี้ (พร้อม taskId ที่กำลังทำ) |
+### Notes
+- สามารถเริ่มจับเวลาได้หลาย task พร้อมกัน
+- ไม่มีการป้องกันการ start หลาย session พร้อมกัน
+
+### Response
+```json
+{
+  "success": true,
+  "data": {
+    "id": "uuid",
+    "taskId": "uuid",
+    "employeeId": "uuid",
+    "startedAt": "2026-04-16T10:00:00.000Z"
+  }
+}
+```
 
 ---
 
@@ -2159,7 +2271,19 @@ Restore folder ออกจาก archive
 
 หยุดพักชั่วคราว — บันทึกเวลาสะสม
 
-**Auth required:** ✅ Bearer token | assignee
+**Auth required:** ✅ Bearer token | assignee หรือ admin
+
+### Response
+```json
+{
+  "success": true,
+  "data": {
+    "durationMin": 15
+  }
+}
+```
+
+**Note:** เวลาจะถูกบวกเพิ่มใน `accumulated_minutes` ของ task อัตโนมัติ
 
 ---
 
@@ -2167,7 +2291,7 @@ Restore folder ออกจาก archive
 
 ปิด task และบันทึกเวลาสุดท้าย
 
-**Auth required:** ✅ Bearer token | assignee
+**Auth required:** ✅ Bearer token | assignee หรือ admin
 
 ---
 
@@ -2281,3 +2405,433 @@ Restore folder ออกจาก archive
 | Code | HTTP | เงื่อนไข |
 |---|---|---|
 | `VALIDATION_ERROR` | 422 | `q` ว่างหรือสั้นกว่า 2 ตัวอักษร |
+
+---
+
+---
+
+# Phase 4 — HR System
+
+## GET /api/employees ✅
+
+ดึงรายชื่อพนักงานทั้งหมด พร้อม pagination + search
+
+**Auth required:** ✅ Bearer token
+
+### Query Parameters
+
+| Param | Type | Required | หมายเหตุ |
+|---|---|---|---|
+| `search` | string | ❌ | ค้นหาจากชื่อหรืออีเมล |
+| `department` | string | ❌ | filter ตาม department |
+| `isActive` | boolean | ❌ | default: คืนทุกสถานะ |
+| `page` | number | ❌ | default 1 |
+| `limit` | number | ❌ | default 20 |
+
+### Response 200
+```json
+{
+  "success": true,
+  "data": {
+    "rows": [
+      {
+        "id": "uuid", "employeeCode": "EMP001", "name": "สมชาย ใจดี",
+        "email": "somchai@xiqma.com", "avatarUrl": null,
+        "role": "employee", "department": "Engineering",
+        "isActive": true, "roleName": "Developer", "positionName": "Senior Dev",
+        "createdAt": "2026-04-14T00:00:00Z"
+      }
+    ],
+    "total": 50
+  }
+}
+```
+
+---
+
+## GET /api/employees/:id ✅
+
+ดึงข้อมูลพนักงานโดย ID พร้อม leave quota
+
+**Auth required:** ✅ Bearer token
+
+### Response 200
+```json
+{
+  "success": true,
+  "data": {
+    "id": "uuid", "employeeCode": "EMP001", "name": "สมชาย ใจดี",
+    "email": "somchai@xiqma.com", "avatarUrl": null,
+    "role": "employee", "roleId": "uuid", "positionId": "uuid",
+    "managerId": "uuid", "department": "Engineering",
+    "leaveQuotaAnnual": 10, "leaveQuotaSick": 30, "leaveQuotaPersonal": 3,
+    "isActive": true, "createdAt": "2026-04-14T00:00:00Z"
+  }
+}
+```
+
+---
+
+## POST /api/employees ✅
+
+สร้างพนักงานใหม่
+
+**Auth required:** ✅ Bearer token | manage_users permission
+
+### Request Body
+```json
+{
+  "employeeCode": "EMP001",
+  "name": "สมชาย ใจดี",
+  "email": "somchai@xiqma.com",
+  "password": "secret123",
+  "role": "employee",
+  "roleId": "uuid",
+  "positionId": "uuid",
+  "department": "Engineering"
+}
+```
+
+### Response 201
+```json
+{ "success": true, "message": "สร้างพนักงานสำเร็จ", "data": { "id": "uuid", ... } }
+```
+
+---
+
+## PUT /api/employees/:id ✅
+
+แก้ไขข้อมูลพนักงาน
+
+**Auth required:** ✅ Bearer token | manage_users permission
+
+---
+
+## PATCH /api/employees/:id/deactivate ✅
+
+Soft-deactivate พนักงาน (ยังคงข้อมูลไว้)
+
+**Auth required:** ✅ Bearer token | manage_users permission
+
+---
+
+## PATCH /api/employees/:id/avatar ✅
+
+อัปโหลดรูปโปรไฟล์
+
+**Auth required:** ✅ Bearer token | owner หรือ manage_users
+
+### Request
+`multipart/form-data` with field `file`
+
+---
+
+## PUT /api/employees/me/password ✅
+
+เปลี่ยนรหัสผ่านตัวเอง
+
+**Auth required:** ✅ Bearer token
+
+### Request Body
+```json
+{ "currentPassword": "old123", "newPassword": "new123" }
+```
+
+---
+
+## GET /api/positions ✅
+
+ดึงตำแหน่งงานทั้งหมด
+
+**Auth required:** ✅ Bearer token
+
+### Query Parameters
+| Param | Type | Required | หมายเหตุ |
+|---|---|---|---|
+| `department` | string | ❌ | filter ตาม department |
+
+### Response 200
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "uuid", "name": "Senior Developer", "department": "Engineering",
+      "level": 3, "jobLevelCode": "L3", "color": "#3b82f6",
+      "parentPositionId": null, "isActive": true, "employeeCount": 5,
+      "createdAt": "2026-04-14T00:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## POST /api/positions ✅
+
+สร้างตำแหน่งงานใหม่
+
+**Auth required:** ✅ Bearer token | manage_workspace
+
+### Request Body
+```json
+{ "name": "Senior Developer", "department": "Engineering", "level": 3, "color": "#3b82f6" }
+```
+
+---
+
+## PUT /api/positions/:id ✅
+
+แก้ไขตำแหน่งงาน
+
+**Auth required:** ✅ Bearer token | manage_workspace
+
+---
+
+## DELETE /api/positions/:id ✅
+
+ลบตำแหน่งงาน (soft delete)
+
+**Auth required:** ✅ Bearer token | manage_workspace
+
+---
+
+## GET /api/roles ✅
+
+ดึง roles ทั้งหมดพร้อม permissions
+
+**Auth required:** ✅ Bearer token
+
+### Response 200
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "uuid", "name": "Developer", "description": null,
+      "color": "#3b82f6",
+      "permissions": ["view_tasks", "create_tasks"],
+      "createdAt": "2026-04-14T00:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## POST /api/roles ✅
+
+สร้าง role ใหม่
+
+**Auth required:** ✅ Bearer token | manage_roles
+
+### Request Body
+```json
+{ "name": "Developer", "color": "#3b82f6", "permissions": ["view_tasks", "create_tasks"] }
+```
+
+---
+
+## PUT /api/roles/:id ✅
+
+แก้ไข role
+
+**Auth required:** ✅ Bearer token | manage_roles
+
+---
+
+## DELETE /api/roles/:id ✅
+
+ลบ role
+
+**Auth required:** ✅ Bearer token | manage_roles
+
+---
+
+## GET /api/holidays ✅
+
+ดึงรายการวันหยุด
+
+**Auth required:** ✅ Bearer token
+
+### Query Parameters
+| Param | Type | Required | หมายเหตุ |
+|---|---|---|---|
+| `year` | number | ❌ | filter ตามปี |
+
+### Response 200
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "uuid", "name": "วันปีใหม่", "holidayDate": "2026-01-01",
+      "isRecurring": true, "note": null, "createdAt": "2026-04-14T00:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## POST /api/holidays ✅
+
+เพิ่มวันหยุดใหม่
+
+**Auth required:** ✅ Bearer token
+
+### Request Body
+```json
+{ "name": "วันหยุดพิเศษ", "holidayDate": "2026-05-01", "isRecurring": false }
+```
+
+---
+
+## PUT /api/holidays/:id ✅
+
+แก้ไขวันหยุด
+
+**Auth required:** ✅ Bearer token
+
+---
+
+## DELETE /api/holidays/:id ✅
+
+ลบวันหยุด
+
+**Auth required:** ✅ Bearer token
+
+---
+
+## GET /api/holidays/working-days ✅
+
+นับวันทำงานในช่วงเวลาที่กำหนด
+
+**Auth required:** ✅ Bearer token
+
+### Query Parameters
+| Param | Type | Required | หมายเหตุ |
+|---|---|---|---|
+| `start` | string | ✅ | YYYY-MM-DD |
+| `end` | string | ✅ | YYYY-MM-DD |
+
+### Response 200
+```json
+{ "success": true, "data": { "workingDays": 22 } }
+```
+
+---
+
+## GET /api/work-schedules ✅
+
+ดึงตารางเวลาทำงานทั้งหมด
+
+**Auth required:** ✅ Bearer token
+
+### Response 200
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "uuid", "name": "Standard 5-day",
+      "daysPerWeek": "5", "hoursPerDay": "8", "hoursPerWeek": "40",
+      "workDays": [1,2,3,4,5], "workStartTime": "09:00", "workEndTime": "18:00",
+      "isDefault": true, "createdAt": "2026-04-14T00:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## POST /api/work-schedules ✅
+
+สร้างตารางเวลาทำงาน
+
+**Auth required:** ✅ Bearer token
+
+### Request Body
+```json
+{
+  "name": "Standard 5-day", "daysPerWeek": 5, "hoursPerDay": 8,
+  "workDays": [1,2,3,4,5], "workStartTime": "09:00", "workEndTime": "18:00",
+  "isDefault": false
+}
+```
+
+---
+
+## PUT /api/work-schedules/:id ✅
+
+แก้ไขตารางเวลาทำงาน
+
+**Auth required:** ✅ Bearer token
+
+---
+
+## DELETE /api/work-schedules/:id ✅
+
+ลบตารางเวลาทำงาน
+
+**Auth required:** ✅ Bearer token
+
+---
+
+## GET /api/task-types ✅
+
+ดึง task types ทั้งหมด
+
+**Auth required:** ✅ Bearer token
+
+### Query Parameters
+| Param | Type | Required | หมายเหตุ |
+|---|---|---|---|
+| `category` | string | ❌ | `private` \| `organization` — ถ้าไม่ระบุ คืนทุก category |
+
+### Response 200
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "uuid", "name": "Development", "description": null,
+      "color": "#3b82f6", "category": "organization",
+      "countsForPoints": true, "fixedPoints": null,
+      "isActive": true, "createdAt": "2026-04-14T00:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## POST /api/task-types ✅
+
+สร้าง task type ใหม่
+
+**Auth required:** ✅ Bearer token
+
+### Request Body
+```json
+{
+  "name": "Development", "color": "#3b82f6",
+  "category": "organization", "countsForPoints": true
+}
+```
+
+---
+
+## PUT /api/task-types/:id ✅
+
+แก้ไข task type
+
+**Auth required:** ✅ Bearer token
+
+---
+
+## DELETE /api/task-types/:id ✅
+
+ลบ task type
+
+**Auth required:** ✅ Bearer token

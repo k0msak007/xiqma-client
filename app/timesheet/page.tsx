@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, Fragment } from "react";
+import { useState, useMemo, useEffect, Fragment } from "react";
 import {
   addDays,
   startOfWeek,
@@ -19,9 +19,7 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
-  Calendar as CalendarIcon,
   Users,
-  Filter,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,159 +37,258 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Calendar } from "@/components/ui/calendar";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
-import { useTaskStore } from "@/lib/store";
 import { useTranslation } from "@/lib/i18n";
-import { calculatePlanFinish } from "@/lib/types";
+import { employeesApi, type Employee } from "@/lib/api/employees";
+import { tasksApi, type CalendarTaskRow } from "@/lib/api/tasks";
+import { attendanceApi, leaveApi, type AttendanceLog, type LeaveQuota } from "@/lib/api/leave";
+import { useAuthStore } from "@/lib/auth-store";
+import { toast } from "sonner";
 
 type ViewMode = "week" | "month";
 
+// กำหนดสีตาม task status enum
+const STATUS_COLORS: Record<string, string> = {
+  open:         "#6b7280",
+  in_progress:  "#3b82f6",
+  review:       "#f59e0b",
+  completed:    "#10b981",
+  closed:       "#6366f1",
+};
+
 export default function TimeSheetPage() {
-  const { tasks, users, statuses } = useTaskStore();
   const { t, language } = useTranslation();
   const locale = language === "th" ? th : enUS;
 
-  // State
-  const [viewMode, setViewMode] = useState<ViewMode>("week");
-  const [currentDate, setCurrentDate] = useState(new Date());
+  const [viewMode, setViewMode]             = useState<ViewMode>("week");
+  const [currentDate, setCurrentDate]       = useState(new Date());
+  const [employees, setEmployees]           = useState<Employee[]>([]);
+  const [tasks, setTasks]                   = useState<CalendarTaskRow[]>([]);
+  const [isLoading, setIsLoading]           = useState(true);
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
-  const [expandedUsers, setExpandedUsers] = useState<Set<string>>(new Set());
-  const [dateRange, setDateRange] = useState<{ from: Date; to: Date }>({
-    from: startOfWeek(new Date(), { weekStartsOn: 1 }),
-    to: endOfWeek(new Date(), { weekStartsOn: 1 }),
-  });
+  const [expandedUsers, setExpandedUsers]   = useState<Set<string>>(new Set());
+  
+  // Attendance state
+  const user = useAuthStore((s) => s.user);
+  const [todayAttendance, setTodayAttendance] = useState<AttendanceLog | null>(null);
+  const [isCheckingIn, setIsCheckingIn] = useState(false);
+  const [isCheckingOut, setIsCheckingOut] = useState(false);
+  
+  // Leave quota state
+  const [leaveQuotas, setLeaveQuotas] = useState<LeaveQuota[]>([]);
 
-  // Calculate date range based on view mode
+  // ─── Date range ───────────────────────────────────────────────────────────
   const dates = useMemo(() => {
     if (viewMode === "week") {
-      const start = startOfWeek(currentDate, { weekStartsOn: 1 });
-      const end = endOfWeek(currentDate, { weekStartsOn: 1 });
-      return eachDayOfInterval({ start, end });
-    } else {
-      const start = startOfMonth(currentDate);
-      const end = endOfMonth(currentDate);
-      return eachDayOfInterval({ start, end });
+      return eachDayOfInterval({
+        start: startOfWeek(currentDate, { weekStartsOn: 1 }),
+        end:   endOfWeek(currentDate,   { weekStartsOn: 1 }),
+      });
     }
+    return eachDayOfInterval({
+      start: startOfMonth(currentDate),
+      end:   endOfMonth(currentDate),
+    });
   }, [currentDate, viewMode]);
 
-  // Filter users
-  const filteredUsers = useMemo(() => {
-    if (selectedUserIds.length === 0) return users;
-    return users.filter((u) => selectedUserIds.includes(u.id));
-  }, [users, selectedUserIds]);
+  // ─── Load data ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const load = async () => {
+      setIsLoading(true);
+      try {
+        const startStr = format(dates[0], "yyyy-MM-dd");
+        const endStr   = format(dates[dates.length - 1], "yyyy-MM-dd");
+        const [empRes, taskRows] = await Promise.all([
+          employeesApi.listAll(),
+          tasksApi.calendar(startStr, endStr),
+        ]);
+        setEmployees(empRes.filter((e) => e.isActive));
+        setTasks(taskRows);
+      } catch {
+        toast.error("โหลดข้อมูลไม่สำเร็จ");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    load();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDate, viewMode]);
 
-  // Get tasks for a specific user on a specific date
-  const getTasksForUserOnDate = (userId: string, date: Date) => {
+  // Load today's attendance status
+  useEffect(() => {
+    const loadTodayStatus = async () => {
+      try {
+        const data = await attendanceApi.getToday();
+        setTodayAttendance(data);
+      } catch (err) {
+        console.error("Failed to load today's attendance:", err);
+      }
+    };
+    loadTodayStatus();
+  }, []);
+
+  // Load leave quotas
+  useEffect(() => {
+    const loadQuotas = async () => {
+      try {
+        const data = await leaveApi.getMyQuotas(new Date().getFullYear());
+        setLeaveQuotas(data);
+      } catch (err) {
+        console.error("Failed to load leave quotas:", err);
+      }
+    };
+    loadQuotas();
+  }, []);
+
+  // Check in
+  const handleCheckIn = async () => {
+    setIsCheckingIn(true);
+    try {
+      const result = await attendanceApi.checkIn();
+      setTodayAttendance(result);
+      toast.success(language === "th" ? "เช็คอินสำเร็จ" : "Check-in successful");
+    } catch (err: any) {
+      toast.error(err.message || (language === "th" ? "เช็คอินไม่สำเร็จ" : "Check-in failed"));
+    } finally {
+      setIsCheckingIn(false);
+    }
+  };
+
+  // Check out
+  const handleCheckOut = async () => {
+    setIsCheckingOut(true);
+    try {
+      const result = await attendanceApi.checkOut();
+      setTodayAttendance(result);
+      toast.success(language === "th" ? "เช็คเอาต์สำเร็จ" : "Check-out successful");
+    } catch (err: any) {
+      toast.error(err.message || (language === "th" ? "เช็คเอาต์ไม่สำเร็จ" : "Check-out failed"));
+    } finally {
+      setIsCheckingOut(false);
+    }
+  };
+
+  // ─── Helpers ──────────────────────────────────────────────────────────────
+  const filteredEmployees = useMemo(() => {
+    if (selectedUserIds.length === 0) return employees;
+    return employees.filter((e) => selectedUserIds.includes(e.id));
+  }, [employees, selectedUserIds]);
+
+  const getTasksForUserOnDate = (userId: string, date: Date): CalendarTaskRow[] => {
     return tasks.filter((task) => {
-      if (!task.assigneeIds.includes(userId)) return false;
-      
-      // Check if task is active on this date
-      if (task.planStart) {
-        const planFinish = calculatePlanFinish(task.planStart, task.duration || 1);
-        if (planFinish) {
-          return isWithinInterval(date, {
-            start: new Date(task.planStart),
-            end: planFinish,
-          }) || isSameDay(date, new Date(task.planStart)) || isSameDay(date, planFinish);
-        }
-        return isSameDay(date, new Date(task.planStart));
+      if (task.assignee_id !== userId) return false;
+      const start = task.plan_start ? new Date(task.plan_start) : null;
+      const end   = task.plan_finish ?? task.deadline
+        ? new Date((task.plan_finish ?? task.deadline)!)
+        : null;
+      if (!start) return false;
+      if (end) {
+        return isWithinInterval(date, { start, end }) ||
+               isSameDay(date, start) || isSameDay(date, end);
       }
-      
-      if (task.createdAt) {
-        return isSameDay(date, new Date(task.createdAt));
-      }
-      
-      return false;
+      return isSameDay(date, start);
     });
   };
 
-  // Get total hours for a user on a specific date
-  const getTotalHoursForUserOnDate = (userId: string, date: Date) => {
-    const userTasks = getTasksForUserOnDate(userId, date);
-    const totalMinutes = userTasks.reduce((sum, task) => {
-      return sum + (task.timeSpent || task.timeEstimate || 0);
+  const getHoursForUserOnDate = (userId: string, date: Date): number => {
+    const dayTasks = getTasksForUserOnDate(userId, date);
+    const totalMin = dayTasks.reduce((sum, t) => {
+      return sum + (t.accumulated_minutes || (t.time_estimate_hours ?? 0) * 60);
     }, 0);
-    return totalMinutes / 60;
+    return totalMin / 60;
   };
 
-  // Get total hours for a user across all dates
-  const getTotalHoursForUser = (userId: string) => {
-    return dates.reduce((sum, date) => {
-      return sum + getTotalHoursForUserOnDate(userId, date);
-    }, 0);
+  const getTotalHoursForUser = (userId: string): number =>
+    dates.reduce((sum, d) => sum + getHoursForUserOnDate(userId, d), 0);
+
+  const formatHours = (h: number) => {
+    if (h === 0) return "-";
+    if (h < 1)   return `${Math.round(h * 60)}m`;
+    return `${h.toFixed(1)}h`;
   };
 
-  // Navigation
-  const navigatePrevious = () => {
-    if (viewMode === "week") {
-      setCurrentDate(addDays(currentDate, -7));
-    } else {
-      setCurrentDate(addDays(currentDate, -30));
-    }
-  };
+  const navigatePrevious = () =>
+    setCurrentDate(addDays(currentDate, viewMode === "week" ? -7 : -30));
+  const navigateNext = () =>
+    setCurrentDate(addDays(currentDate, viewMode === "week" ? 7 : 30));
+  const goToToday = () => setCurrentDate(new Date());
 
-  const navigateNext = () => {
-    if (viewMode === "week") {
-      setCurrentDate(addDays(currentDate, 7));
-    } else {
-      setCurrentDate(addDays(currentDate, 30));
-    }
-  };
+  const toggleUser = (id: string) =>
+    setSelectedUserIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
 
-  const goToToday = () => {
-    setCurrentDate(new Date());
-  };
+  const toggleExpand = (id: string) =>
+    setExpandedUsers((prev) => {
+      const s = new Set(prev);
+      s.has(id) ? s.delete(id) : s.add(id);
+      return s;
+    });
 
-  // Toggle user expansion
-  const toggleUserExpanded = (userId: string) => {
-    const newExpanded = new Set(expandedUsers);
-    if (newExpanded.has(userId)) {
-      newExpanded.delete(userId);
-    } else {
-      newExpanded.add(userId);
-    }
-    setExpandedUsers(newExpanded);
-  };
-
-  // Toggle user selection
-  const toggleUserSelection = (userId: string) => {
-    if (selectedUserIds.includes(userId)) {
-      setSelectedUserIds(selectedUserIds.filter((id) => id !== userId));
-    } else {
-      setSelectedUserIds([...selectedUserIds, userId]);
-    }
-  };
-
-  // Format hours display
-  const formatHours = (hours: number) => {
-    if (hours === 0) return "-";
-    if (hours < 1) return `${Math.round(hours * 60)}m`;
-    return `${hours.toFixed(1)}h`;
-  };
-
-  // Get status for task
-  const getStatus = (statusId: string) => {
-    return statuses.find((s) => s.id === statusId);
-  };
+  const grandTotal = filteredEmployees.reduce((s, e) => s + getTotalHoursForUser(e.id), 0);
 
   return (
     <div className="flex flex-1 flex-col gap-6 p-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">
-            {language === "th" ? "Time Sheet" : "Time Sheet"}
-          </h1>
+          <h1 className="text-2xl font-bold">Time Sheet</h1>
           <p className="text-muted-foreground">
-            {language === "th"
-              ? "ดูภาพรวมการทำงานของแต่ละคนในแต่ละวัน"
-              : "View work overview for each person by day"}
+            {language === "th" ? "ดูภาพรวมการทำงานของแต่ละคนในแต่ละวัน" : "Work overview per person by day"}
           </p>
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Check In/Out Buttons */}
+          {todayAttendance?.checkIn && !todayAttendance?.checkOut ? (
+            <Button 
+              variant="default" 
+              onClick={handleCheckOut}
+              disabled={isCheckingOut}
+              className="gap-2"
+            >
+              <Clock className="h-4 w-4" />
+              {language === "th" ? "เช็คเอาต์" : "Check Out"}
+            </Button>
+          ) : !todayAttendance?.checkIn ? (
+            <Button 
+              variant="default" 
+              onClick={handleCheckIn}
+              disabled={isCheckingIn}
+              className="gap-2"
+            >
+              <Clock className="h-4 w-4" />
+              {language === "th" ? "เช็คอิน" : "Check In"}
+            </Button>
+          ) : null}
+          
+          {/* Today's Status */}
+          {todayAttendance && (
+            <Badge variant={todayAttendance.status === "late" ? "destructive" : "secondary"}>
+              {todayAttendance.checkIn 
+                ? `${language === "th" ? "เข้า" : "In"}: ${new Date(todayAttendance.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                : "-"}
+              {todayAttendance.checkOut 
+                ? ` / ${language === "th" ? "ออก" : "Out"}: ${new Date(todayAttendance.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                : ""}
+            </Badge>
+          )}
+
+          {/* Leave Quotas Summary */}
+          {leaveQuotas.length > 0 && (
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">{language === "th" ? "โควตาลา:" : "Leave:"}</span>
+              {leaveQuotas.slice(0, 2).map((q) => (
+                <Badge key={q.leaveType} variant="outline" className="text-xs">
+                  {q.leaveType === "annual" ? (language === "th" ? "ประจำ" : "Annual") : 
+                   q.leaveType === "sick" ? (language === "th" ? "ป่วย" : "Sick") : 
+                   q.leaveType === "personal" ? (language === "th" ? "กิจ" : "Personal") : q.leaveType}: {q.remainingDays}
+                </Badge>
+              ))}
+            </div>
+          )}
+
           {/* User Filter */}
           <Popover>
             <PopoverTrigger asChild>
@@ -199,44 +296,32 @@ export default function TimeSheetPage() {
                 <Users className="h-4 w-4" />
                 {selectedUserIds.length > 0
                   ? `${selectedUserIds.length} ${language === "th" ? "คน" : "selected"}`
-                  : language === "th"
-                  ? "ทุกคน"
-                  : "All Users"}
+                  : language === "th" ? "ทุกคน" : "All Users"}
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-64" align="end">
               <div className="space-y-2">
                 <p className="text-sm font-medium">
-                  {language === "th" ? "เลือกคน" : "Select Users"}
+                  {language === "th" ? "เลือกพนักงาน" : "Select Employees"}
                 </p>
-                <div className="space-y-2 max-h-64 overflow-auto">
-                  {users.map((user) => (
+                <div className="max-h-64 overflow-auto space-y-1">
+                  {employees.map((emp) => (
                     <div
-                      key={user.id}
+                      key={emp.id}
                       className="flex items-center gap-2 p-2 rounded hover:bg-muted cursor-pointer"
-                      onClick={() => toggleUserSelection(user.id)}
+                      onClick={() => toggleUser(emp.id)}
                     >
-                      <Checkbox
-                        checked={selectedUserIds.includes(user.id)}
-                        onCheckedChange={() => toggleUserSelection(user.id)}
-                      />
+                      <Checkbox checked={selectedUserIds.includes(emp.id)} onCheckedChange={() => toggleUser(emp.id)} />
                       <Avatar className="h-6 w-6">
-                        <AvatarImage src={user.avatar} />
-                        <AvatarFallback className="text-xs">
-                          {user.name.charAt(0)}
-                        </AvatarFallback>
+                        <AvatarImage src={emp.avatarUrl ?? undefined} />
+                        <AvatarFallback className="text-xs">{emp.name.charAt(0)}</AvatarFallback>
                       </Avatar>
-                      <span className="text-sm">{user.name}</span>
+                      <span className="text-sm">{emp.name}</span>
                     </div>
                   ))}
                 </div>
                 {selectedUserIds.length > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => setSelectedUserIds([])}
-                  >
+                  <Button variant="ghost" size="sm" className="w-full" onClick={() => setSelectedUserIds([])}>
                     {language === "th" ? "ล้างการเลือก" : "Clear Selection"}
                   </Button>
                 )}
@@ -246,16 +331,10 @@ export default function TimeSheetPage() {
 
           {/* View Mode */}
           <Select value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
-            <SelectTrigger className="w-32">
-              <SelectValue />
-            </SelectTrigger>
+            <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="week">
-                {language === "th" ? "รายสัปดาห์" : "Weekly"}
-              </SelectItem>
-              <SelectItem value="month">
-                {language === "th" ? "รายเดือน" : "Monthly"}
-              </SelectItem>
+              <SelectItem value="week">{language === "th" ? "รายสัปดาห์" : "Weekly"}</SelectItem>
+              <SelectItem value="month">{language === "th" ? "รายเดือน" : "Monthly"}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -277,265 +356,181 @@ export default function TimeSheetPage() {
 
         <div className="text-lg font-medium">
           {viewMode === "week" ? (
-            <>
-              {format(dates[0], "d MMM", { locale })} -{" "}
-              {format(dates[dates.length - 1], "d MMM yyyy", { locale })}
-            </>
+            <>{format(dates[0], "d MMM", { locale })} – {format(dates[dates.length - 1], "d MMM yyyy", { locale })}</>
           ) : (
             format(currentDate, "MMMM yyyy", { locale })
           )}
         </div>
 
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="gap-1">
-            <Clock className="h-3 w-3" />
-            {language === "th" ? "รวมทั้งหมด" : "Total"}:{" "}
-            {formatHours(
-              filteredUsers.reduce((sum, user) => sum + getTotalHoursForUser(user.id), 0)
-            )}
-          </Badge>
-        </div>
+        <Badge variant="outline" className="gap-1">
+          <Clock className="h-3 w-3" />
+          {language === "th" ? "รวม" : "Total"}: {formatHours(grandTotal)}
+        </Badge>
       </div>
 
-      {/* Time Sheet Table */}
+      {/* Table */}
       <Card>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b bg-muted/50">
-                  <th className="sticky left-0 bg-muted/50 p-3 text-left min-w-[200px] z-10">
-                    {language === "th" ? "พนักงาน" : "Employee"}
-                  </th>
-                  {dates.map((date) => (
-                    <th
-                      key={date.toISOString()}
-                      className={cn(
-                        "p-2 text-center min-w-[100px] text-sm font-medium",
-                        isSameDay(date, new Date()) && "bg-primary/10"
-                      )}
-                    >
-                      <div>{format(date, "EEE", { locale })}</div>
-                      <div className="text-muted-foreground">
-                        {format(date, "d", { locale })}
-                      </div>
+          {isLoading ? (
+            <div className="flex items-center justify-center py-16 text-muted-foreground">
+              {language === "th" ? "กำลังโหลด…" : "Loading…"}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b bg-muted/50">
+                    <th className="sticky left-0 bg-muted/50 p-3 text-left min-w-[200px] z-10">
+                      {language === "th" ? "พนักงาน" : "Employee"}
                     </th>
-                  ))}
-                  <th className="p-3 text-center min-w-[80px] bg-muted/50">
-                    {language === "th" ? "รวม" : "Total"}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredUsers.map((user) => {
-                  const isExpanded = expandedUsers.has(user.id);
-                  const userTotalHours = getTotalHoursForUser(user.id);
-
-                  return (
-                    <Fragment key={user.id}>
-                      {/* User Summary Row */}
-                      <tr
-                        className="border-b hover:bg-muted/30 cursor-pointer"
-                        onClick={() => toggleUserExpanded(user.id)}
+                    {dates.map((date) => (
+                      <th
+                        key={date.toISOString()}
+                        className={cn(
+                          "p-2 text-center min-w-[80px] text-sm font-medium",
+                          isSameDay(date, new Date()) && "bg-primary/10"
+                        )}
                       >
-                        <td className="sticky left-0 bg-background p-3 z-10">
-                          <div className="flex items-center gap-3">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleUserExpanded(user.id);
-                              }}
-                            >
-                              {isExpanded ? (
-                                <ChevronUp className="h-4 w-4" />
-                              ) : (
-                                <ChevronDown className="h-4 w-4" />
-                              )}
-                            </Button>
-                            <Avatar className="h-8 w-8">
-                              <AvatarImage src={user.avatar} />
-                              <AvatarFallback>{user.name.charAt(0)}</AvatarFallback>
-                            </Avatar>
-                            <div>
-                              <div className="font-medium">{user.name}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {user.email}
+                        <div>{format(date, "EEE", { locale })}</div>
+                        <div className="text-muted-foreground">{format(date, "d")}</div>
+                      </th>
+                    ))}
+                    <th className="p-3 text-center min-w-[80px] bg-muted/50">
+                      {language === "th" ? "รวม" : "Total"}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredEmployees.map((emp) => {
+                    const isExpanded = expandedUsers.has(emp.id);
+                    const totalHours = getTotalHoursForUser(emp.id);
+
+                    return (
+                      <Fragment key={emp.id}>
+                        {/* Summary Row */}
+                        <tr
+                          className="border-b hover:bg-muted/30 cursor-pointer"
+                          onClick={() => toggleExpand(emp.id)}
+                        >
+                          <td className="sticky left-0 bg-background p-3 z-10">
+                            <div className="flex items-center gap-3">
+                              <Button
+                                variant="ghost" size="icon" className="h-6 w-6"
+                                onClick={(e) => { e.stopPropagation(); toggleExpand(emp.id); }}
+                              >
+                                {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                              </Button>
+                              <Avatar className="h-8 w-8">
+                                <AvatarImage src={emp.avatarUrl ?? undefined} />
+                                <AvatarFallback>{emp.name.charAt(0)}</AvatarFallback>
+                              </Avatar>
+                              <div>
+                                <div className="font-medium">{emp.name}</div>
+                                <div className="text-xs text-muted-foreground">{emp.email ?? ""}</div>
                               </div>
                             </div>
-                          </div>
-                        </td>
-                        {dates.map((date) => {
-                          const hours = getTotalHoursForUserOnDate(user.id, date);
-                          const taskCount = getTasksForUserOnDate(user.id, date).length;
-                          return (
-                            <td
-                              key={date.toISOString()}
-                              className={cn(
-                                "p-2 text-center",
-                                isSameDay(date, new Date()) && "bg-primary/10"
-                              )}
-                            >
-                              {taskCount > 0 ? (
-                                <div>
-                                  <div className="font-medium">{formatHours(hours)}</div>
-                                  <div className="text-xs text-muted-foreground">
-                                    {taskCount} {language === "th" ? "งาน" : "tasks"}
+                          </td>
+                          {dates.map((date) => {
+                            const hours = getHoursForUserOnDate(emp.id, date);
+                            const count = getTasksForUserOnDate(emp.id, date).length;
+                            return (
+                              <td key={date.toISOString()} className={cn("p-2 text-center", isSameDay(date, new Date()) && "bg-primary/10")}>
+                                {count > 0 ? (
+                                  <div>
+                                    <div className="font-medium">{formatHours(hours)}</div>
+                                    <div className="text-xs text-muted-foreground">{count} {language === "th" ? "งาน" : "tasks"}</div>
                                   </div>
-                                </div>
-                              ) : (
-                                <span className="text-muted-foreground">-</span>
-                              )}
-                            </td>
-                          );
-                        })}
-                        <td className="p-3 text-center bg-muted/30">
-                          <div className="font-bold">{formatHours(userTotalHours)}</div>
-                        </td>
-                      </tr>
+                                ) : (
+                                  <span className="text-muted-foreground">-</span>
+                                )}
+                              </td>
+                            );
+                          })}
+                          <td className="p-3 text-center bg-muted/30">
+                            <div className="font-bold">{formatHours(totalHours)}</div>
+                          </td>
+                        </tr>
 
-                      {/* Expanded Task Rows */}
-                      {isExpanded &&
-                        dates.map((date) => {
-                          const userTasks = getTasksForUserOnDate(user.id, date);
-                          if (userTasks.length === 0) return null;
-
-                          return userTasks.map((task, idx) => (
-                            <tr
-                              key={`${user.id}-${date.toISOString()}-${task.id}`}
-                              className="border-b bg-muted/10"
-                            >
+                        {/* Expanded Task Rows */}
+                        {isExpanded && dates.map((date) => {
+                          const dayTasks = getTasksForUserOnDate(emp.id, date);
+                          if (dayTasks.length === 0) return null;
+                          return dayTasks.map((task) => (
+                            <tr key={`${emp.id}-${date.toISOString()}-${task.id}`} className="border-b bg-muted/10">
                               <td className="sticky left-0 bg-muted/10 p-3 pl-14 z-10">
                                 <div className="flex items-center gap-2">
                                   <Badge
-                                    variant="outline"
-                                    className="text-[10px]"
+                                    variant="outline" className="text-[10px]"
                                     style={{
-                                      borderColor: getStatus(task.statusId)?.color,
-                                      color: getStatus(task.statusId)?.color,
+                                      borderColor: task.status_color ?? STATUS_COLORS[task.status] ?? "#6b7280",
+                                      color:       task.status_color ?? STATUS_COLORS[task.status] ?? "#6b7280",
                                     }}
                                   >
-                                    {getStatus(task.statusId)?.name}
+                                    {task.status_name ?? task.status}
                                   </Badge>
-                                  <span className="text-sm truncate max-w-[150px]">
-                                    {task.title}
-                                  </span>
+                                  <span className="text-sm truncate max-w-[140px]">{task.title}</span>
                                 </div>
                               </td>
                               {dates.map((d) => {
                                 const isTaskDate = isSameDay(d, date);
+                                const hours = (task.accumulated_minutes || (task.time_estimate_hours ?? 0) * 60) / 60;
                                 return (
-                                  <td
-                                    key={d.toISOString()}
-                                    className={cn(
-                                      "p-2 text-center text-sm",
-                                      isSameDay(d, new Date()) && "bg-primary/10"
-                                    )}
-                                  >
+                                  <td key={d.toISOString()} className={cn("p-2 text-center text-sm", isSameDay(d, new Date()) && "bg-primary/10")}>
                                     {isTaskDate ? (
-                                      <span className="text-muted-foreground">
-                                        {formatHours(
-                                          (task.timeSpent || task.timeEstimate || 0) / 60
-                                        )}
-                                      </span>
-                                    ) : (
-                                      ""
-                                    )}
+                                      <span className="text-muted-foreground">{formatHours(hours)}</span>
+                                    ) : ""}
                                   </td>
                                 );
                               })}
                               <td className="p-3 text-center bg-muted/30">
                                 <span className="text-sm text-muted-foreground">
-                                  {formatHours(
-                                    (task.timeSpent || task.timeEstimate || 0) / 60
-                                  )}
+                                  {formatHours((task.accumulated_minutes || (task.time_estimate_hours ?? 0) * 60) / 60)}
                                 </span>
                               </td>
                             </tr>
                           ));
                         })}
-                    </Fragment>
-                  );
-                })}
+                      </Fragment>
+                    );
+                  })}
 
-                {filteredUsers.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={dates.length + 2}
-                      className="p-8 text-center text-muted-foreground"
-                    >
-                      {language === "th"
-                        ? "ไม่พบข้อมูลพนักงาน"
-                        : "No employees found"}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                  {filteredEmployees.length === 0 && (
+                    <tr>
+                      <td colSpan={dates.length + 2} className="p-8 text-center text-muted-foreground">
+                        {language === "th" ? "ไม่พบข้อมูลพนักงาน" : "No employees found"}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
         </CardContent>
       </Card>
 
       {/* Summary Cards */}
       <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              {language === "th" ? "รวมชั่วโมงทำงาน" : "Total Work Hours"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {formatHours(
-                filteredUsers.reduce((sum, user) => sum + getTotalHoursForUser(user.id), 0)
-              )}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              {language === "th" ? "จำนวนพนักงาน" : "Employees"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{filteredUsers.length}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              {language === "th" ? "จำนวนงานทั้งหมด" : "Total Tasks"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {filteredUsers.reduce((sum, user) => {
-                return (
-                  sum +
-                  dates.reduce((d, date) => d + getTasksForUserOnDate(user.id, date).length, 0)
-                );
-              }, 0)}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              {language === "th" ? "เฉลี่ยต่อวัน" : "Avg per Day"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {formatHours(
-                filteredUsers.reduce((sum, user) => sum + getTotalHoursForUser(user.id), 0) /
-                  dates.length
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        {[
+          { label: language === "th" ? "รวมชั่วโมงทำงาน" : "Total Work Hours", value: formatHours(grandTotal) },
+          { label: language === "th" ? "จำนวนพนักงาน" : "Employees", value: filteredEmployees.length.toString() },
+          {
+            label: language === "th" ? "จำนวนงานทั้งหมด" : "Total Tasks",
+            value: String(
+              filteredEmployees.reduce((sum, emp) =>
+                sum + dates.reduce((d, date) => d + getTasksForUserOnDate(emp.id, date).length, 0), 0)
+            ),
+          },
+          { label: language === "th" ? "เฉลี่ยต่อวัน" : "Avg per Day", value: formatHours(grandTotal / Math.max(dates.length, 1)) },
+        ].map(({ label, value }) => (
+          <Card key={label}>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{value}</div>
+            </CardContent>
+          </Card>
+        ))}
       </div>
     </div>
   );

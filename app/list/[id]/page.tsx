@@ -46,10 +46,14 @@ import { KanbanBoard } from "@/components/kanban-board";
 import { AddTaskDialog } from "@/components/add-task-dialog";
 import { AddStatusDialog } from "@/components/add-status-dialog";
 import { TaskTableRow } from "@/components/task-table-row";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { useTaskStore } from "@/lib/store";
 import { useListTaskStore } from "@/lib/list-task-store";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 import { getCachedEmployee } from "@/lib/employee-cache";
+import { tasksApi, type ApiTaskDetail } from "@/lib/api/tasks";
+import { useAuthStore } from "@/lib/auth-store";
+import { toast } from "sonner";
 import type { ViewType, Priority } from "@/lib/types";
 import type { Task } from "@/lib/types";
 
@@ -62,11 +66,15 @@ interface PageProps {
 export default function ListPage({ params }: PageProps) {
   const { id } = use(params);
   const searchParams = useSearchParams();
-  const selectedTaskId = searchParams.get("task");
+  const urlTaskId = searchParams.get("task");
 
   const { navigation, setActiveView, setActiveTask } = useTaskStore();
   const { tasks, statuses, loading, loadListTasks } = useListTaskStore();
   const { lists } = useWorkspaceStore();
+  const user = useAuthStore((s) => s.user);
+
+  // Use store's activeTaskId or URL's task param
+  const selectedTaskId = urlTaskId || navigation.activeTaskId;
 
   const [searchQuery, setSearchQuery] = useState("");
   const [filterPriority, setFilterPriority] = useState<Priority | "all">("all");
@@ -217,6 +225,46 @@ export default function ListPage({ params }: PageProps) {
   };
 
   const hasActiveFilters = filterStatus !== "all" || filterPriority !== "all" || filterAssignee !== "all" || planStartFrom || planStartTo;
+
+  // Handle task updates - call API and update local store
+  const handleTaskUpdate = async (taskId: string, updates: Partial<Task>) => {
+    try {
+      // Build API payload from Task type (camelCase to match backend schema)
+      const payload: any = {};
+      
+      if (updates.statusId !== undefined) payload.listStatusId = updates.statusId;
+      if (updates.priority !== undefined) payload.priority = updates.priority;
+      if (updates.storyPoints !== undefined) payload.storyPoints = updates.storyPoints;
+      if (updates.duration !== undefined) payload.durationDays = updates.duration;
+      if (updates.planStart !== undefined) payload.planStart = updates.planStart?.toISOString().split("T")[0];
+      if (updates.actualStart !== undefined) payload.startedAt = updates.actualStart?.toISOString();
+      if (updates.actualFinish !== undefined) payload.completedAt = updates.actualFinish?.toISOString();
+      if (updates.timeSpent !== undefined) payload.accumulatedMinutes = updates.timeSpent;
+      if (updates.taskTypeId !== undefined) payload.taskTypeId = updates.taskTypeId || null;
+      if (updates.estimateProgress !== undefined) payload.estimateProgress = updates.estimateProgress;
+      if (updates.assigneeId !== undefined) payload.assigneeId = updates.assigneeId || null;
+      
+      await tasksApi.update(taskId, payload);
+      
+      // Reload tasks to get updated data
+      await loadListTasks(id);
+    } catch (err) {
+      console.error("Failed to update task:", err);
+      toast.error("Failed to save changes");
+    }
+  };
+
+  // Handle task delete
+  const handleTaskDelete = async (taskId: string) => {
+    try {
+      await tasksApi.delete(taskId);
+      toast.success("Task deleted");
+      await loadListTasks(id);
+    } catch (err) {
+      console.error("Failed to delete task:", err);
+      toast.error("Failed to delete task");
+    }
+  };
 
   const selectedTask = selectedTaskId
     ? tasks.find((t) => t.id === selectedTaskId)
@@ -460,6 +508,8 @@ export default function ListPage({ params }: PageProps) {
                 setShowAddTaskDialog(true);
               }}
               onAddStatus={() => setShowAddStatusDialog(true)}
+              onUpdateTask={handleTaskUpdate}
+              onDeleteTask={handleTaskDelete}
             />
           ) : (
             <div className="p-4">
@@ -506,6 +556,8 @@ export default function ListPage({ params }: PageProps) {
                                 onClick={() => setActiveTask(task.id)}
                                 isSelected={task.id === selectedTaskId}
                                 statuses={statuses}
+                                onUpdate={handleTaskUpdate}
+                                onDelete={handleTaskDelete}
                               />
                             ))}
                           </tbody>
@@ -528,15 +580,20 @@ export default function ListPage({ params }: PageProps) {
         </div>
       </div>
 
-      {/* Task Detail Panel */}
-      {selectedTask && (
-        <div className="w-[400px] shrink-0">
-          <TaskDetail
-            task={selectedTask}
-            onClose={() => setActiveTask(undefined)}
-          />
-        </div>
-      )}
+      {/* Task Detail Panel - Drawer from right */}
+      <Sheet open={!!selectedTask} onOpenChange={(open) => !open && setActiveTask(undefined)}>
+        <SheetContent className="w-[400px] p-0">
+          {selectedTask && (
+            <TaskDetail
+              task={selectedTask}
+              onClose={() => setActiveTask(undefined)}
+              onTaskChange={(updated) => {
+                setActiveTask(updated);
+              }}
+            />
+          )}
+        </SheetContent>
+      </Sheet>
 
       {/* Add Task Dialog */}
       <AddTaskDialog

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { format, subYears } from "date-fns";
 import {
   TrendingUp,
   TrendingDown,
@@ -33,9 +34,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useTaskStore } from "@/lib/store";
-import { users, lists, getUserById, getRoleById } from "@/lib/mock-data";
-import { priorityConfig, isHoliday, getWorkingDays, calculatePointSplit } from "@/lib/types";
-import type { HolidaySettings, Task, User } from "@/lib/types";
+import { priorityConfig, isHoliday } from "@/lib/types";
+import type { HolidaySettings } from "@/lib/types";
+import { employeesApi, type Employee } from "@/lib/api/employees";
+import { tasksApi, type CalendarTaskRow } from "@/lib/api/tasks";
 import { useTranslation } from "@/lib/i18n";
 import {
   AreaChart,
@@ -175,70 +177,78 @@ function PerformanceGauge({ value, label }: { value: number; label: string }) {
   );
 }
 
+// Standard 5 statuses used in analytics (mirrors job-status master)
+const STANDARD_STATUSES = [
+  { id: "open",        name: "Open",        color: "#6b7280" },
+  { id: "in_progress", name: "In Progress", color: "#3b82f6" },
+  { id: "review",      name: "Review",      color: "#f59e0b" },
+  { id: "done",        name: "Done",        color: "#10b981" },
+  { id: "closed",      name: "Closed",      color: "#6366f1" },
+];
+
 export default function AnalyticsPage() {
-  const { tasks, users: storeUsers, roles, holidaySettings, taskTypes } = useTaskStore();
+  const { holidaySettings, taskTypes } = useTaskStore();
   const { t, language } = useTranslation();
-  
+
+  const [employees,      setEmployees]      = useState<Employee[]>([]);
+  const [apiTasks,       setApiTasks]       = useState<CalendarTaskRow[]>([]);
+  const [dataLoading,    setDataLoading]    = useState(true);
+
   const [selectedPeriod, setSelectedPeriod] = useState<"week" | "month" | "quarter" | "year">("week");
   const [selectedUserId, setSelectedUserId] = useState<string>("all");
-  const [activeTab, setActiveTab] = useState("performance");
+  const [activeTab,      setActiveTab]      = useState("performance");
+
+  // Load employees + 1-year calendar tasks on mount
+  useEffect(() => {
+    const start = format(subYears(new Date(), 1), "yyyy-MM-dd");
+    const end   = format(new Date(), "yyyy-MM-dd");
+    setDataLoading(true);
+    Promise.all([
+      employeesApi.list({ limit: 200, isActive: true }),
+      tasksApi.calendar(start, end),
+    ])
+      .then(([empRes, calTasks]) => {
+        setEmployees(empRes.rows);
+        setApiTasks(calTasks);
+      })
+      .catch(console.error)
+      .finally(() => setDataLoading(false));
+  }, []);
 
   // Get current holiday settings
   const currentYear = new Date().getFullYear();
   const currentHolidaySettings = getHolidaySettingsForYear(holidaySettings, currentYear);
-  
+
   // Calculate date range
   const dateRange = useMemo(() => getDateRange(selectedPeriod), [selectedPeriod]);
   const workingDaysInPeriod = useMemo(
     () => getWorkingDaysInPeriod(dateRange.start, dateRange.end, currentHolidaySettings),
-    [dateRange, currentHolidaySettings]
+    [dateRange, currentHolidaySettings],
   );
+
+  // Use API tasks (CalendarTaskRow)
+  const tasks = apiTasks;
 
   // Individual Performance Metrics
   const performanceMetrics = useMemo(() => {
-    const filterTasks = selectedUserId === "all" 
-      ? tasks 
-      : tasks.filter((t) => t.assigneeIds.includes(selectedUserId));
+    const filterTasks =
+      selectedUserId === "all"
+        ? tasks
+        : tasks.filter((t) => t.assignee_id === selectedUserId);
 
-    // Point Status calculations
-    const assignedPoints = filterTasks.reduce((sum, t) => sum + (t.storyPoints || 0), 0);
+    const assignedPoints  = filterTasks.reduce((sum, t) => sum + (t.story_points ?? 0), 0);
     const inProgressPoints = filterTasks
-      .filter((t) => t.statusId === "status-2" || t.statusId === "status-3")
-      .reduce((sum, t) => sum + (t.storyPoints || 0), 0);
+      .filter((t) => t.status === "in_progress" || t.status === "review")
+      .reduce((sum, t) => sum + (t.story_points ?? 0), 0);
     const completedPoints = filterTasks
-      .filter((t) => t.statusId === "status-4" || t.statusId === "status-5")
-      .reduce((sum, t) => sum + (t.storyPoints || 0), 0);
+      .filter((t) => t.status === "done" || t.status === "closed")
+      .reduce((sum, t) => sum + (t.story_points ?? 0), 0);
     const backlogPoints = filterTasks
-      .filter((t) => t.statusId === "status-1")
-      .reduce((sum, t) => sum + (t.storyPoints || 0), 0);
+      .filter((t) => t.status === "open")
+      .reduce((sum, t) => sum + (t.story_points ?? 0), 0);
 
-    // Calculate target based on user's role
-    let dailyTarget = 8; // Default 8 points per day
-    if (selectedUserId !== "all") {
-      const user = storeUsers.find((u) => u.id === selectedUserId);
-      if (user?.roleId) {
-        const role = roles.find((r) => r.id === user.roleId);
-        if (role?.pointTarget) {
-          // Convert role target to daily target
-          switch (role.pointTarget.period) {
-            case "day":
-              dailyTarget = role.pointTarget.totalPoints;
-              break;
-            case "week":
-              dailyTarget = role.pointTarget.totalPoints / 5; // Assume 5 working days
-              break;
-            case "month":
-              dailyTarget = role.pointTarget.totalPoints / 22; // Assume 22 working days
-              break;
-            case "year":
-              dailyTarget = role.pointTarget.totalPoints / 260; // Assume 260 working days
-              break;
-          }
-        }
-      }
-    }
-
-    const targetPoints = dailyTarget * workingDaysInPeriod;
+    const dailyTarget    = 8; // default 8 story-points/day
+    const targetPoints   = dailyTarget * workingDaysInPeriod;
     const performancePercent = targetPoints > 0 ? (completedPoints / targetPoints) * 100 : 0;
 
     return {
@@ -246,35 +256,46 @@ export default function AnalyticsPage() {
       inProgressPoints,
       completedPoints,
       backlogPoints,
-      targetPoints: Math.round(targetPoints),
+      targetPoints:     Math.round(targetPoints),
       performancePercent,
-      dailyTarget: Math.round(dailyTarget * 10) / 10,
-      workingDays: workingDaysInPeriod,
+      dailyTarget,
+      workingDays:      workingDaysInPeriod,
     };
-  }, [tasks, selectedUserId, storeUsers, roles, workingDaysInPeriod]);
+  }, [tasks, selectedUserId, workingDaysInPeriod]);
 
-  // Velocity Analysis Data
+  // Velocity Analysis Data (last 6 weeks, grouped by plan_finish or created_at)
   const velocityData = useMemo(() => {
-    // Generate weekly velocity data for last 6 periods
     const data = [];
     for (let i = 5; i >= 0; i--) {
-      const date = new Date();
+      const date  = new Date();
       date.setDate(date.getDate() - i * 7);
       const range = getDateRange("week", date);
-      
+      const weekNum = Math.ceil(
+        (date.getTime() - new Date(date.getFullYear(), 0, 1).getTime()) /
+          (7 * 24 * 60 * 60 * 1000),
+      );
+
       const periodTasks = tasks.filter((t) => {
-        const taskDate = t.completedAt ? new Date(t.completedAt) : null;
-        return taskDate && taskDate >= range.start && taskDate <= range.end;
+        // use plan_finish as proxy for completion
+        const finishDate = t.plan_finish ? new Date(t.plan_finish) : null;
+        return finishDate && finishDate >= range.start && finishDate <= range.end &&
+          (t.status === "done" || t.status === "closed");
       });
 
-      const completed = periodTasks.reduce((sum, t) => sum + (t.storyPoints || 0), 0);
-      const planned = completed + Math.floor(Math.random() * 10); // Simulated planned
+      const completed = periodTasks.reduce((sum, t) => sum + (t.story_points ?? 0), 0);
+      const allInWeek = tasks.filter((t) => {
+        const d = t.plan_finish ? new Date(t.plan_finish) : null;
+        return d && d >= range.start && d <= range.end;
+      });
+      const planned = allInWeek.reduce((sum, t) => sum + (t.story_points ?? 0), 0);
 
       data.push({
-        period: `W${date.getWeek ? date.getWeek() : Math.ceil(date.getDate() / 7)}`,
-        planned,
+        period:     `W${weekNum}`,
+        planned:    planned || completed,
         completed,
-        efficiency: planned > 0 ? Math.round((completed / planned) * 100) : 0,
+        efficiency: (planned || completed) > 0
+          ? Math.round((completed / (planned || completed)) * 100)
+          : 0,
       });
     }
     return data;
@@ -300,37 +321,38 @@ export default function AnalyticsPage() {
   const efficiencyData = useMemo(() => {
     const completedTasks = tasks.filter(
       (t) =>
-        (t.statusId === "status-4" || t.statusId === "status-5") &&
-        t.timeEstimate &&
-        t.timeSpent
+        (t.status === "done" || t.status === "closed") &&
+        t.time_estimate_hours &&
+        t.accumulated_minutes > 0,
     );
 
-    const data = completedTasks.slice(0, 10).map((task) => ({
-      name: task.title.substring(0, 15) + "...",
-      estimated: Math.round((task.timeEstimate || 0) / 60),
-      actual: Math.round((task.timeSpent || 0) / 60),
-      accuracy:
-        task.timeEstimate && task.timeEstimate > 0
-          ? Math.round((task.timeSpent! / task.timeEstimate) * 100)
-          : 0,
-    }));
-
-    // Point density calculation (minutes per story point)
-    const pointDensity: { user: string; avgMinutesPerPoint: number; taskCount: number }[] = [];
-    
-    users.forEach((user) => {
-      const userTasks = completedTasks.filter((t) => t.assigneeIds.includes(user.id));
-      const totalMinutes = userTasks.reduce((sum, t) => sum + (t.timeSpent || 0), 0);
-      const totalPoints = userTasks.reduce((sum, t) => sum + (t.storyPoints || 0), 0);
-      
-      if (totalPoints > 0) {
-        pointDensity.push({
-          user: user.name,
-          avgMinutesPerPoint: Math.round(totalMinutes / totalPoints),
-          taskCount: userTasks.length,
-        });
-      }
+    const data = completedTasks.slice(0, 10).map((task) => {
+      const estMins = (task.time_estimate_hours ?? 0) * 60;
+      const actMins = task.accumulated_minutes;
+      return {
+        name:      task.title.substring(0, 15) + "…",
+        estimated: Math.round(estMins / 60),
+        actual:    Math.round(actMins / 60),
+        accuracy:  estMins > 0 ? Math.round((actMins / estMins) * 100) : 0,
+      };
     });
+
+    // Point density per user
+    const pointDensity: { user: string; avgMinutesPerPoint: number; taskCount: number }[] = [];
+    if (Array.isArray(employees)) {
+      for (const emp of employees) {
+        const userTasks = completedTasks.filter((t) => t.assignee_id === emp.id);
+        const totalMinutes = userTasks.reduce((sum, t) => sum + t.accumulated_minutes, 0);
+        const totalPoints  = userTasks.reduce((sum, t) => sum + (t.story_points ?? 0), 0);
+        if (totalPoints > 0) {
+          pointDensity.push({
+            user:               emp.name,
+            avgMinutesPerPoint: Math.round(totalMinutes / totalPoints),
+            taskCount:          userTasks.length,
+          });
+        }
+      }
+    }
 
     const avgAccuracy =
       data.length > 0
@@ -338,49 +360,52 @@ export default function AnalyticsPage() {
         : 0;
 
     return { tasks: data, pointDensity, avgAccuracy };
-  }, [tasks]);
+  }, [tasks, employees]);
 
   // Bottleneck Analysis - Status Aging
   const bottleneckData = useMemo(() => {
-    const defaultList = lists[0];
-    if (!defaultList) return { statusAging: [], workloadBalance: [] };
-
-    // Calculate average time spent in each status
-    const statusAging = defaultList.statuses.map((status) => {
-      const tasksInStatus = tasks.filter((t) => t.statusId === status.id);
-      const avgDays = tasksInStatus.length > 0
-        ? Math.round(
-            tasksInStatus.reduce((sum, t) => {
-              const created = new Date(t.createdAt);
-              const now = new Date();
-              return sum + Math.floor((now.getTime() - created.getTime()) / (1000 * 60 * 60 * 24));
-            }, 0) / tasksInStatus.length
-          )
-        : 0;
+    // Use standard 5 statuses for status aging
+    const statusAging = STANDARD_STATUSES.map((status) => {
+      const tasksInStatus = tasks.filter((t) => t.status === status.id);
+      const avgDays =
+        tasksInStatus.length > 0
+          ? Math.round(
+              tasksInStatus.reduce((sum, t) => {
+                const created = new Date(t.created_at);
+                return (
+                  sum +
+                  Math.floor(
+                    (Date.now() - created.getTime()) / (1000 * 60 * 60 * 24),
+                  )
+                );
+              }, 0) / tasksInStatus.length,
+            )
+          : 0;
 
       return {
-        status: status.name,
-        color: status.color,
-        taskCount: tasksInStatus.length,
+        status:      status.name,
+        color:       status.color,
+        taskCount:   tasksInStatus.length,
         avgDays,
         isBottleneck: avgDays > 5 && tasksInStatus.length > 3,
       };
     });
 
-    // Workload balance
-    const workloadBalance = users.map((user) => {
-      const userTasks = tasks.filter((t) => t.assigneeIds.includes(user.id));
-      const activePoints = userTasks
-        .filter((t) => t.statusId !== "status-4" && t.statusId !== "status-5")
-        .reduce((sum, t) => sum + (t.storyPoints || 0), 0);
-
-      return {
-        user: user.name,
-        avatar: user.avatar,
-        points: activePoints,
-        taskCount: userTasks.length,
-      };
-    }).sort((a, b) => b.points - a.points);
+    // Workload balance from real employees
+    const workloadBalance = (Array.isArray(employees) ? employees : [])
+      .map((emp) => {
+        const userTasks   = tasks.filter((t) => t.assignee_id === emp.id);
+        const activePoints = userTasks
+          .filter((t) => t.status !== "done" && t.status !== "closed")
+          .reduce((sum, t) => sum + (t.story_points ?? 0), 0);
+        return {
+          user:      emp.name,
+          avatar:    emp.avatarUrl,
+          points:    activePoints,
+          taskCount: userTasks.length,
+        };
+      })
+      .sort((a, b) => b.points - a.points);
 
     const avgPoints =
       workloadBalance.length > 0
@@ -391,69 +416,79 @@ export default function AnalyticsPage() {
       statusAging,
       workloadBalance: workloadBalance.map((w) => ({
         ...w,
-        isOverloaded: w.points > avgPoints * 1.5,
+        isOverloaded:  w.points > avgPoints * 1.5,
         isUnderloaded: w.points < avgPoints * 0.5,
       })),
     };
-  }, [tasks]);
+  }, [tasks, employees]);
 
-  // Quality Score - Rework Rate
+  // Quality Score — based on real completed tasks per employee
   const qualityData = useMemo(() => {
-    // Simulate rework data (tasks that moved back from review to in-progress)
     const completedTasks = tasks.filter(
-      (t) => t.statusId === "status-4" || t.statusId === "status-5"
+      (t) => t.status === "done" || t.status === "closed",
     );
-    
-    // Simulated rework rate based on task type
-    const reworkTasks = completedTasks.filter(() => Math.random() < 0.15); // 15% rework rate
-    const reworkRate = completedTasks.length > 0
-      ? Math.round((reworkTasks.length / completedTasks.length) * 100)
-      : 0;
 
-    // Quality by user (simulated)
-    const qualityByUser = users.map((user) => {
-      const userCompletedTasks = completedTasks.filter((t) =>
-        t.assigneeIds.includes(user.id)
-      );
-      const userReworkRate = Math.floor(Math.random() * 25); // 0-25% simulated
-
-      return {
-        user: user.name,
-        avatar: user.avatar,
-        completedTasks: userCompletedTasks.length,
-        reworkRate: userReworkRate,
-        qualityScore: 100 - userReworkRate,
-      };
-    }).sort((a, b) => b.qualityScore - a.qualityScore);
+    // Quality by user: score = min(100, completedTasks count * 10) — proxy metric
+    const qualityByUser = (Array.isArray(employees) ? employees : [])
+      .map((emp) => {
+        const userCompleted = completedTasks.filter((t) => t.assignee_id === emp.id);
+        // Use time accuracy as quality proxy when data is available
+        const tasksWithTime = userCompleted.filter(
+          (t) => t.time_estimate_hours && t.accumulated_minutes > 0,
+        );
+        let qualityScore = 100;
+        if (tasksWithTime.length > 0) {
+          const avgAccuracy =
+            tasksWithTime.reduce((sum, t) => {
+              const estMins = (t.time_estimate_hours ?? 0) * 60;
+              const ratio = estMins > 0 ? t.accumulated_minutes / estMins : 1;
+              // score penalised if task took > 150% of estimate
+              return sum + (ratio <= 1.5 ? 100 : Math.max(0, 100 - (ratio - 1.5) * 50));
+            }, 0) / tasksWithTime.length;
+          qualityScore = Math.round(avgAccuracy);
+        }
+        return {
+          user:           emp.name,
+          avatar:         emp.avatarUrl,
+          completedTasks: userCompleted.length,
+          reworkRate:     0,
+          qualityScore,
+        };
+      })
+      .sort((a, b) => b.qualityScore - a.qualityScore);
 
     return {
       totalCompleted: completedTasks.length,
-      reworkCount: reworkTasks.length,
-      reworkRate,
+      reworkCount:    0,
+      reworkRate:     0,
       qualityByUser,
     };
-  }, [tasks]);
+  }, [tasks, employees]);
 
-  // Tasks by task type with point counting info
+  // Tasks by task type — CalendarTaskRow doesn't include task_type_id,
+  // so show only the store task-types with task counts from local store tasks
   const taskTypeAnalysis = useMemo(() => {
-    return taskTypes.map((tt) => {
-      const typeTasks = tasks.filter((t) => t.taskTypeId === tt.id);
-      const points = typeTasks.reduce((sum, t) => sum + (t.storyPoints || 0), 0);
-      
-      return {
-        name: tt.name,
-        color: tt.color,
-        taskCount: typeTasks.length,
-        points,
-        countsForPoints: tt.countsForPoints,
-      };
-    });
-  }, [tasks, taskTypes]);
+    return taskTypes.map((tt) => ({
+      name:           tt.name,
+      color:          tt.color,
+      taskCount:      0, // no task_type_id in CalendarTaskRow
+      points:         0,
+      countsForPoints: tt.countsForPoints,
+    }));
+  }, [taskTypes]);
 
   const formatTime = (minutes: number) => {
     const hours = Math.floor(minutes / 60);
     return `${hours}h`;
   };
+
+  if (dataLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[50vh]">
+        <p className="text-muted-foreground">Loading analytics…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -479,9 +514,9 @@ export default function AnalyticsPage() {
               <SelectItem value="all">
                 {language === "th" ? "ทั้งทีม" : "All Team"}
               </SelectItem>
-              {users.map((user) => (
-                <SelectItem key={user.id} value={user.id}>
-                  {user.name}
+              {(Array.isArray(employees) ? employees : []).map((emp) => (
+                <SelectItem key={emp.id} value={emp.id}>
+                  {emp.name}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -1127,7 +1162,7 @@ export default function AnalyticsPage() {
                 {qualityData.qualityByUser.map((user) => (
                   <div key={user.user} className="flex items-center gap-4">
                     <Avatar className="h-10 w-10">
-                      <AvatarImage src={user.avatar} />
+                      <AvatarImage src={user.avatar ?? undefined} />
                       <AvatarFallback>{user.user.substring(0, 2)}</AvatarFallback>
                     </Avatar>
                     <div className="flex-1">

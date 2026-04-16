@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
+import { tasksApi } from "@/lib/api/tasks";
+import { useAuthStore } from "@/lib/auth-store";
 import {
   Select,
   SelectContent,
@@ -44,7 +46,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useTaskStore } from "@/lib/store";
-import { getUserById, users, getTaskTypeById } from "@/lib/mock-data";
+import { getUserById, getTaskTypeById } from "@/lib/mock-data";
 import { 
   priorityConfig, 
   storyPointsOptions,
@@ -53,6 +55,8 @@ import {
   calculateActualProgress,
   calculateVariance 
 } from "@/lib/types";
+import { employeesApi, type Employee } from "@/lib/api/employees";
+import { toast } from "sonner";
 import type { Task, Priority, StoryPoints, Status } from "@/lib/types";
 
 interface TaskTableRowProps {
@@ -60,15 +64,70 @@ interface TaskTableRowProps {
   onClick: () => void;
   isSelected: boolean;
   statuses: Status[];
+  onUpdate?: (taskId: string, updates: Partial<Task>) => Promise<void>;
+  onDelete?: (taskId: string) => Promise<void>;
 }
 
-export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableRowProps) {
-  const { updateTask, deleteTask, taskTypes } = useTaskStore();
-  const [isTracking, setIsTracking] = useState(false);
-  const [trackingStartTime, setTrackingStartTime] = useState<Date | null>(null);
+export function TaskTableRow({ task, onClick, isSelected, statuses, onUpdate }: TaskTableRowProps) {
+  const store = useTaskStore();
+  const { updateTask: storeUpdateTask, deleteTask, taskTypes } = store;
+  const user = useAuthStore((s) => s.user);
+  const [runningTimer, setRunningTimer] = useState<{ id: string; startedAt: string } | null>(null);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [showReassignDialog, setShowReassignDialog] = useState(false);
-  const [selectedAssignees, setSelectedAssignees] = useState<string[]>(task.assigneeIds);
+  const [selectedAssignee, setSelectedAssignee] = useState<string>(task.assigneeIds[0] || "");
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [loadingEmployees, setLoadingEmployees] = useState(false);
+
+  // Check if user can timer (admin or assignee)
+  const canTimer = user && (user.role === "admin" || task.assigneeIds.includes(user.id));
+
+  // Check for running timer on mount and periodically
+  useEffect(() => {
+    const checkTimer = async () => {
+      try {
+        const sessions = await tasksApi.getTimer(task.id);
+        const running = sessions.find(s => !s.endedAt);
+        if (running) {
+          setRunningTimer(running);
+          const startTime = new Date(running.startedAt).getTime();
+          const elapsed = Math.floor((Date.now() - startTime) / 1000);
+          setElapsedTime(elapsed);
+        } else {
+          setRunningTimer(null);
+          setElapsedTime(0);
+        }
+      } catch { /* ignore */ }
+    };
+    
+    checkTimer();
+    const interval = setInterval(checkTimer, 10000);
+    return () => clearInterval(interval);
+  }, [task.id]);
+
+  // Update elapsed time every second when tracking
+  useEffect(() => {
+    if (!runningTimer) return;
+    const interval = setInterval(() => {
+      const startTime = new Date(runningTimer.startedAt).getTime();
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      setElapsedTime(elapsed);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [runningTimer]);
+
+  const isTracking = !!runningTimer;
+
+  // Load employees when reassign dialog opens
+  useEffect(() => {
+    if (showReassignDialog && employees.length === 0) {
+      setLoadingEmployees(true);
+      employeesApi.listAll()
+        .then((emps) => setEmployees(emps.filter(e => e.isActive)))
+        .catch(console.error)
+        .finally(() => setLoadingEmployees(false));
+    }
+  }, [showReassignDialog]);
   
   const status = statuses.find(s => s.id === task.statusId);
   const taskType = task.taskTypeId ? getTaskTypeById(task.taskTypeId) : null;
@@ -81,71 +140,86 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
 
   // Calculate progress values
   const planProgress = useMemo(() => {
-    return calculatePlanProgress(task.planStart, task.duration);
-  }, [task.planStart, task.duration]);
+    return calculatePlanProgress(task.planStart, planFinish);
+}, [task.planStart, planFinish]);
 
-  const actualProgress = useMemo(() => {
-    return calculateActualProgress(task.timeSpent, task.timeEstimate);
-  }, [task.timeSpent, task.timeEstimate]);
+  // Actual % shows user's estimated progress (from estimateProgress field)
+  const actualProgress = task.estimateProgress ?? 0;
 
-  const variance = useMemo(() => {
+const variance = useMemo(() => {
     return calculateVariance(planProgress, actualProgress);
   }, [planProgress, actualProgress]);
 
-  // Time tracking effect
+  // Sync selected assignee when task changes
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    
-    if (isTracking && trackingStartTime) {
-      interval = setInterval(() => {
-        setElapsedTime(Math.floor((Date.now() - trackingStartTime.getTime()) / 1000));
-      }, 1000);
-    }
-    
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [isTracking, trackingStartTime]);
-
-  // Sync selected assignees when task changes
-  useEffect(() => {
-    setSelectedAssignees(task.assigneeIds);
+    setSelectedAssignee(task.assigneeIds[0] || "");
   }, [task.assigneeIds]);
 
-  const handleStartTracking = () => {
-    setIsTracking(true);
-    setTrackingStartTime(new Date());
-    setElapsedTime(0);
+  // Handle update - call API if available, otherwise update local store
+  const handleUpdate = async (updates: Partial<Task>) => {
+    // If assigning to someone, also set assigneeId for API compatibility
+    const apiUpdates = { ...updates };
+    if (updates.assigneeIds && updates.assigneeIds.length > 0) {
+      apiUpdates.assigneeId = updates.assigneeIds[0];
+    }
     
-    // Set actual start if not set
-    if (!task.actualStart) {
-      updateTask(task.id, { actualStart: new Date() });
+    if (onUpdate) {
+      await onUpdate(task.id, apiUpdates);
+    }
+    // Only update local store for non-timeSpent fields (timeSpent will be updated after API returns)
+    const { timeSpent, ...localUpdates } = updates;
+    if (Object.keys(localUpdates).length > 0) {
+      storeUpdateTask(task.id, localUpdates);
     }
   };
 
-  const handleStopTracking = () => {
-    if (trackingStartTime) {
-      const trackedMinutes = Math.round((Date.now() - trackingStartTime.getTime()) / 60000);
-      updateTask(task.id, {
-        timeSpent: (task.timeSpent || 0) + trackedMinutes,
+  const handleToggleTracking = async () => {
+    try {
+      if (runningTimer) {
+        // Stop timer
+        await tasksApi.stopTimer(task.id);
+        setRunningTimer(null);
+        setElapsedTime(0);
+      } else {
+        // Start timer
+        const session = await tasksApi.startTimer(task.id);
+        setRunningTimer(session);
+        const startTime = new Date(session.startedAt).getTime();
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        setElapsedTime(elapsed);
+        
+        // Set actual start if not set
+        if (!task.actualStart) {
+          handleUpdate({ actualStart: new Date() });
+        }
+      }
+    } catch (err: any) {
+      if (err?.data?.error === "SESSION_ALREADY_RUNNING") {
+        alert(`มี timer กำลังทำงานอยู่แล้ว (task: ${err.data.runningTaskId})`);
+      } else {
+        alert("Failed to toggle timer");
+      }
+    }
+  };
+
+  // Old functions - kept for compatibility but not used
+  const handleStartTracking = () => {};
+  const handleStopTracking = () => {};
+
+  const handleReassign = async () => {
+    if (onUpdate) {
+      // Pass both assigneeId (for API) and assigneeIds (for local store)
+      await onUpdate(task.id, { 
+        assigneeId: selectedAssignee || null,
+        assigneeIds: selectedAssignee ? [selectedAssignee] : []
       });
+      toast.success("Task reassigned successfully");
     }
-    setIsTracking(false);
-    setTrackingStartTime(null);
-    setElapsedTime(0);
-  };
-
-  const handleReassign = () => {
-    updateTask(task.id, { assigneeIds: selectedAssignees });
     setShowReassignDialog(false);
   };
 
   const toggleAssignee = (userId: string) => {
-    setSelectedAssignees(prev => 
-      prev.includes(userId) 
-        ? prev.filter(id => id !== userId)
-        : [...prev, userId]
-    );
+    setSelectedAssignee(userId);
   };
 
   const formatElapsedTime = (seconds: number) => {
@@ -175,6 +249,7 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
           "border-b hover:bg-muted/50 transition-colors cursor-pointer",
           isSelected && "bg-muted"
         )}
+        onClick={onClick}
       >
         {/* Task ID */}
         <td className="p-2 text-xs text-muted-foreground font-mono" onClick={onClick}>
@@ -191,7 +266,7 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
                   ? statuses.find(s => s.type === "done")?.id 
                   : statuses.find(s => s.type === "open")?.id;
                 if (newStatus) {
-                  updateTask(task.id, { 
+                  handleUpdate({ 
                     statusId: newStatus,
                     completedAt: checked ? new Date() : undefined,
                     actualFinish: checked ? new Date() : undefined
@@ -208,7 +283,7 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
         <td className="p-2" onClick={(e) => e.stopPropagation()}>
           <Select
             value={task.statusId}
-            onValueChange={(value) => updateTask(task.id, { statusId: value })}
+            onValueChange={(value) => handleUpdate({ statusId: value })}
           >
             <SelectTrigger className="h-7 w-[100px] text-xs">
               <div className="flex items-center gap-1.5">
@@ -239,7 +314,7 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
         <td className="p-2" onClick={(e) => e.stopPropagation()}>
           <Select
             value={task.taskTypeId || "none"}
-            onValueChange={(value) => updateTask(task.id, { 
+            onValueChange={(value) => handleUpdate({ 
               taskTypeId: value === "none" ? undefined : value 
             })}
           >
@@ -277,7 +352,7 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
         <td className="p-2" onClick={(e) => e.stopPropagation()}>
           <Select
             value={task.priority}
-            onValueChange={(value) => updateTask(task.id, { priority: value as Priority })}
+            onValueChange={(value) => handleUpdate({ priority: value as Priority })}
           >
             <SelectTrigger className="h-7 w-[90px] text-xs">
               <div className="flex items-center gap-1.5">
@@ -308,7 +383,7 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
         <td className="p-2" onClick={(e) => e.stopPropagation()}>
           <Select
             value={task.storyPoints?.toString() || "none"}
-            onValueChange={(value) => updateTask(task.id, { 
+            onValueChange={(value) => handleUpdate({ 
               storyPoints: value === "none" ? undefined : parseInt(value) as StoryPoints 
             })}
           >
@@ -332,7 +407,7 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
             type="number"
             min="1"
             value={task.duration || ""}
-            onChange={(e) => updateTask(task.id, { 
+            onChange={(e) => handleUpdate({ 
               duration: e.target.value ? parseInt(e.target.value) : undefined 
             })}
             className="h-7 w-[60px] text-xs"
@@ -362,7 +437,7 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
               <Calendar
                 mode="single"
                 selected={task.planStart ? new Date(task.planStart) : undefined}
-                onSelect={(date) => updateTask(task.id, { planStart: date || undefined })}
+                onSelect={(date) => handleUpdate({ planStart: date || undefined })}
                 initialFocus
               />
             </PopoverContent>
@@ -396,7 +471,7 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
               <Calendar
                 mode="single"
                 selected={task.actualStart ? new Date(task.actualStart) : undefined}
-                onSelect={(date) => updateTask(task.id, { actualStart: date || undefined })}
+                onSelect={(date) => handleUpdate({ actualStart: date || undefined })}
                 initialFocus
               />
             </PopoverContent>
@@ -425,7 +500,7 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
               <Calendar
                 mode="single"
                 selected={task.actualFinish ? new Date(task.actualFinish) : undefined}
-                onSelect={(date) => updateTask(task.id, { actualFinish: date || undefined })}
+                onSelect={(date) => handleUpdate({ actualFinish: date || undefined })}
                 initialFocus
               />
             </PopoverContent>
@@ -490,28 +565,41 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
                 <Badge variant="destructive" className="font-mono text-[10px] animate-pulse">
                   {formatElapsedTime(elapsedTime)}
                 </Badge>
+                {canTimer && (
                 <Button 
                   variant="ghost" 
                   size="icon" 
                   className="h-6 w-6 text-destructive hover:text-destructive"
-                  onClick={handleStopTracking}
+                  onClick={handleToggleTracking}
                 >
                   <Square className="h-3 w-3 fill-current" />
                 </Button>
+                )}
               </>
             ) : (
               <>
                 <span className="text-xs text-muted-foreground min-w-[40px]">
-                  {task.timeSpent ? formatTimeSpent(task.timeSpent) : "-"}
+                  {task.timeSpent || elapsedTime > 0 ? (
+                    <>
+                      {(() => {
+                        const totalMinutes = task.timeSpent + Math.floor(elapsedTime / 60);
+                        const h = Math.floor(totalMinutes / 60);
+                        const m = totalMinutes % 60;
+                        return h > 0 ? `${h}h ${m}m` : `${m}m`;
+                      })()}
+                    </>
+                  ) : "-"}
                 </span>
+                {canTimer && (
                 <Button 
                   variant="ghost" 
                   size="icon" 
                   className="h-6 w-6 text-primary hover:text-primary"
-                  onClick={handleStartTracking}
+                  onClick={handleToggleTracking}
                 >
                   <Play className="h-3 w-3 fill-current" />
                 </Button>
+                )}
               </>
             )}
           </div>
@@ -540,16 +628,8 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
                 <Badge variant="secondary" className="h-6 px-1 text-[10px]">
                   +{assignees.length - 2}
                 </Badge>
-              )}
+)}
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6"
-              onClick={() => setShowReassignDialog(true)}
-            >
-              <UserPlus className="h-3 w-3" />
-            </Button>
           </div>
         </td>
 
@@ -566,11 +646,28 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
               <DropdownMenuItem onClick={() => setShowReassignDialog(true)}>
                 Re-assign
               </DropdownMenuItem>
-              <DropdownMenuItem>Duplicate</DropdownMenuItem>
+              <DropdownMenuItem 
+                onClick={() => {
+                  if (onUpdate) {
+                    onUpdate(task.id, { 
+                      estimateProgress: 100
+                    });
+                    toast.success("Marked as complete");
+                  }
+                }}
+              >
+                Mark as Complete
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem 
                 className="text-destructive"
-                onClick={() => deleteTask(task.id)}
+                onClick={() => {
+                  if (onDelete) {
+                    onDelete(task.id);
+                  } else {
+                    deleteTask(task.id);
+                  }
+                }}
               >
                 Delete
               </DropdownMenuItem>
@@ -589,30 +686,36 @@ export function TaskTableRow({ task, onClick, isSelected, statuses }: TaskTableR
             </DialogDescription>
           </DialogHeader>
           <div className="py-4 max-h-[300px] overflow-auto">
-            <div className="space-y-2">
-              {users.map(user => (
-                <div 
-                  key={user.id}
-                  className={cn(
-                    "flex items-center gap-3 p-2 rounded-lg cursor-pointer hover:bg-muted transition-colors",
-                    selectedAssignees.includes(user.id) && "bg-muted"
-                  )}
-                  onClick={() => toggleAssignee(user.id)}
-                >
-                  <Avatar className="h-8 w-8">
-                    <AvatarImage src={user.avatar} />
-                    <AvatarFallback>{user.name.charAt(0)}</AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium">{user.name}</p>
-                    <p className="text-xs text-muted-foreground">{user.role}</p>
+            {loadingEmployees ? (
+              <div className="text-center text-muted-foreground py-4">Loading...</div>
+            ) : employees.length === 0 ? (
+              <div className="text-center text-muted-foreground py-4">No employees found</div>
+            ) : (
+              <div className="space-y-2">
+                {employees.map(emp => (
+                  <div 
+                    key={emp.id}
+                    className={cn(
+                      "flex items-center gap-3 p-2 rounded-lg cursor-pointer hover:bg-muted transition-colors",
+                      selectedAssignee.includes(emp.id) && "bg-muted"
+                    )}
+                    onClick={() => toggleAssignee(emp.id)}
+                  >
+                    <Avatar className="h-8 w-8">
+                      <AvatarImage src={emp.avatarUrl ?? undefined} />
+                      <AvatarFallback>{emp.name.charAt(0)}</AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium">{emp.name}</p>
+                      <p className="text-xs text-muted-foreground">{emp.role}</p>
+                    </div>
+                    {selectedAssignee.includes(emp.id) && (
+                      <Check className="h-4 w-4 text-primary" />
+                    )}
                   </div>
-                  {selectedAssignees.includes(user.id) && (
-                    <Check className="h-4 w-4 text-primary" />
-                  )}
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowReassignDialog(false)}>

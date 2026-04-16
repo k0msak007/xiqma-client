@@ -65,6 +65,7 @@ function adaptApiRow(row: ApiTaskRow): Task {
     storyPoints,
     timeEstimate: row.time_estimate_hours ? Math.round(Number(row.time_estimate_hours) * 60) : undefined,
     timeSpent:    row.accumulated_minutes ? Number(row.accumulated_minutes) : undefined,
+    estimateProgress: row.estimate_progress != null ? Number(row.estimate_progress) : undefined,
     tags:         (row.tags as string[]) || [],
     subtasks:     stubSubtasks,
     comments:     stubComments,
@@ -101,6 +102,7 @@ function adaptApiDetail(row: ApiTaskDetail): Task {
     storyPoints,
     timeEstimate: row.timeEstimateHours ? Math.round(Number(row.timeEstimateHours) * 60) : undefined,
     timeSpent:    row.accumulatedMinutes ? Number(row.accumulatedMinutes) : undefined,
+    estimateProgress: row.estimateProgress != null ? Number(row.estimateProgress) : undefined,
     tags:         row.tags || [],
     subtasks:     [], // filled separately by loadSubtasks
     comments:     [], // filled separately by loadComments

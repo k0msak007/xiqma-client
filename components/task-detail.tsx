@@ -64,6 +64,7 @@ import { useWorkspaceStore } from "@/lib/workspace-store";
 import { useAuthStore } from "@/lib/auth-store";
 import { getCachedEmployee } from "@/lib/employee-cache";
 import { getTagByName } from "@/lib/mock-data";
+import { tasksApi } from "@/lib/api/tasks";
 import {
   priorityConfig,
   storyPointsOptions,
@@ -76,14 +77,16 @@ import { format } from "date-fns";
 interface TaskDetailProps {
   task: Task;
   onClose: () => void;
+  onTaskChange?: (task: Task) => void;
 }
 
-export function TaskDetail({ task, onClose }: TaskDetailProps) {
+export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
   const router = useRouter();
   const { taskTypes } = useTaskStore();
   const {
     updateTask: apiUpdateTask,
     deleteTask: apiDeleteTask,
+    refreshTask,
     statuses,
     loadSubtasks,
     toggleSubtask,
@@ -112,7 +115,9 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description || "");
   const [newSubtask, setNewSubtask] = useState("");
-  const [isTimeTracking, setIsTimeTracking] = useState(false);
+  const [runningTimer, setRunningTimer] = useState<{ id: string; startedAt: string } | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [currentTask, setCurrentTask] = useState(task);
   const [showAssigneeDialog, setShowAssigneeDialog] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [employees, setEmployees] = useState<{ id: string; name: string; avatarUrl: string | null }[]>([]);
@@ -143,6 +148,11 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
     }
   }, [task.id, loadSubtasks, loadComments, loadAttachments]);
 
+  // Sync currentTask when task prop changes
+  useEffect(() => {
+    setCurrentTask(task);
+  }, [task.id, task.timeSpent]);
+
   // Load employees for assignee dialog
   useEffect(() => {
     if (showAssigneeDialog && employees.length === 0) {
@@ -153,6 +163,45 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
       });
     }
   }, [showAssigneeDialog, employees.length]);
+
+  // Check for running timer
+  useEffect(() => {
+    const checkTimer = async () => {
+      try {
+        const sessions = await tasksApi.getTimer(task.id);
+        const running = sessions.find(s => !s.endedAt);
+        if (running) {
+          setRunningTimer(running);
+          const startTime = new Date(running.startedAt).getTime();
+          const elapsed = Math.floor((Date.now() - startTime) / 1000);
+          setElapsedSeconds(elapsed);
+        } else {
+          setRunningTimer(null);
+          setElapsedSeconds(0);
+        }
+      } catch { /* ignore */ }
+    };
+    
+    checkTimer();
+    const interval = setInterval(checkTimer, 10000);
+    return () => clearInterval(interval);
+  }, [task.id]);
+
+  // Update elapsed time every second when tracking
+  useEffect(() => {
+    if (!runningTimer) return;
+    const interval = setInterval(() => {
+      const startTime = new Date(runningTimer.startedAt).getTime();
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      setElapsedSeconds(elapsed);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [runningTimer]);
+
+  const isTimeTracking = !!runningTimer;
+
+  // Check if user can timer (admin or assignee)
+  const canTimer = user && (user.role === "admin" || task.assigneeIds.includes(user.id));
 
   const handleTitleSave = () => {
     if (title.trim()) {
@@ -258,11 +307,30 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
     // timeSpent (accumulated_minutes) is read-only from API; skip
   };
 
-  const toggleTimeTracking = () => {
-    if (isTimeTracking) {
-      setIsTimeTracking(false);
-    } else {
-      setIsTimeTracking(true);
+  const toggleTimeTracking = async () => {
+    try {
+      if (runningTimer) {
+        // Stop timer
+        await tasksApi.stopTimer(task.id);
+        setRunningTimer(null);
+        setElapsedSeconds(0);
+        await refreshTask(task.id);
+        toast.success("Timer stopped");
+      } else {
+        // Start timer
+        const session = await tasksApi.startTimer(task.id);
+        setRunningTimer(session);
+        const startTime = new Date(session.startedAt).getTime();
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        setElapsedSeconds(elapsed);
+        toast.success("Timer started");
+      }
+    } catch (err: any) {
+      if (err?.data?.error === "SESSION_ALREADY_RUNNING") {
+        toast.error(`มี timer กำลังทำงานอยู่แล้ว (task: ${err.data.runningTaskId})`);
+      } else {
+        toast.error("Failed to toggle timer");
+      }
     }
   };
 
@@ -613,9 +681,19 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                     <div className="flex items-center gap-1">
                       <span className="text-muted-foreground">Tracked:</span>
                       <span className="text-xs font-medium">
-                        {formatTimeSpent(task.timeSpent)}
+                        {runningTimer ? (
+                          <>
+                            {formatTimeSpent(currentTask.timeSpent)}
+                            <span className="ml-1 text-green-500">
+                              +{formatTimeSpent(Math.floor(elapsedSeconds / 60))}
+                            </span>
+                          </>
+                        ) : (
+                          formatTimeSpent(currentTask.timeSpent)
+                        )}
                       </span>
                     </div>
+                    {canTimer && (
                     <Button
                       variant={isTimeTracking ? "destructive" : "outline"}
                       size="sm"
@@ -634,13 +712,14 @@ export function TaskDetail({ task, onClose }: TaskDetailProps) {
                         </>
                       )}
                     </Button>
+                    )}
                   </div>
                   {task.timeEstimate && (
                     <Progress
                       value={
-                        task.timeSpent
+                        (task.timeSpent || 0) + Math.floor(elapsedSeconds / 60)
                           ? Math.min(
-                              (task.timeSpent / task.timeEstimate) * 100,
+                              (((task.timeSpent || 0) + Math.floor(elapsedSeconds / 60)) / task.timeEstimate) * 100,
                               100
                             )
                           : 0

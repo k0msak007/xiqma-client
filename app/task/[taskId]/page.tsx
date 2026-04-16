@@ -23,6 +23,8 @@ import {
   Target,
   Link2,
   X,
+  Play,
+  Square,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -64,7 +66,6 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useTaskStore } from "@/lib/store";
-import { getUserById, getListById, statuses } from "@/lib/mock-data";
 import {
   calculatePlanFinish,
   calculatePlanProgress,
@@ -101,10 +102,15 @@ export default function TaskViewPage() {
   const [estimateProgress, setEstimateProgress] = useState(0);
   const [showEditProgressDialog, setShowEditProgressDialog] = useState(false);
 
+  // Timer state
+  const [runningTimer, setRunningTimer] = useState<{ id: string; startedAt: string } | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
   // Get current user from auth store
   const user = useAuthStore((s) => s.user);
+  const { taskTypes } = useTaskStore();
   const currentUserId = user?.id || "";
-  const currentUser = user ? { name: user.name, avatar: user.avatar || undefined } : null;
+  const currentUser = user ? { name: user.name, avatar: undefined as string | undefined } : null;
 
   // Load task from API
   useEffect(() => {
@@ -163,7 +169,78 @@ export default function TaskViewPage() {
     }
   }, [taskId]);
 
-  const { taskTypes, updateTask } = useTaskStore();
+  // Check for running timer
+  useEffect(() => {
+    const checkTimer = async () => {
+      try {
+        const sessions = await tasksApi.getTimer(taskId);
+        const running = sessions.find(s => !s.endedAt);
+        if (running) {
+          setRunningTimer(running);
+          const startTime = new Date(running.startedAt).getTime();
+          const elapsed = Math.floor((Date.now() - startTime) / 1000);
+          setElapsedSeconds(elapsed);
+        } else {
+          setRunningTimer(null);
+          setElapsedSeconds(0);
+        }
+      } catch { /* ignore */ }
+    };
+    
+    if (taskId) {
+      checkTimer();
+      const interval = setInterval(checkTimer, 10000);
+      return () => clearInterval(interval);
+    }
+  }, [taskId]);
+
+  // Update elapsed time every second when tracking
+  useEffect(() => {
+    if (!runningTimer) return;
+    const interval = setInterval(() => {
+      const startTime = new Date(runningTimer.startedAt).getTime();
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      setElapsedSeconds(elapsed);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [runningTimer]);
+
+  const toggleTimer = async () => {
+    try {
+      if (runningTimer) {
+        await tasksApi.stopTimer(taskId);
+        setRunningTimer(null);
+        setElapsedSeconds(0);
+        // Refresh task to get updated time
+        const updated = await tasksApi.get(taskId);
+        setTask(updated);
+      } else {
+        const session = await tasksApi.startTimer(taskId);
+        setRunningTimer(session);
+        const startTime = new Date(session.startedAt).getTime();
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        setElapsedSeconds(elapsed);
+      }
+    } catch (err: any) {
+      if (err?.data?.error === "SESSION_ALREADY_RUNNING") {
+        alert(`มี timer กำลังทำงานอยู่แล้ว (task: ${err.data.runningTaskId})`);
+      } else {
+        alert("Failed to toggle timer");
+      }
+    }
+  };
+
+  const formatElapsed = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  // Check if user can timer (admin or assignee) - only check after task is loaded
+  const taskAssigneeId = task ? ((task as any).assigneeId || (task as any).assignee_id) : null;
+  const canTimer = task && user && (user.role === "admin" || taskAssigneeId === user.id);
 
   // If loading, show loading state
   if (loading) {
@@ -189,9 +266,16 @@ export default function TaskViewPage() {
     );
   }
 
-  const list = getListById(task.listId);
-  const status = statuses.find((s) => s.id === task.listStatusId);
-  const taskType = taskTypes.find((tt) => tt.id === task.taskTypeId);
+  // List name — try API joined field, fall back gracefully
+  const taskAny = task as unknown as Record<string, unknown>;
+  const listNameDisplay: string | null =
+    (taskAny.listName as string | null) ??
+    (taskAny.list_name as string | null) ??
+    null;
+  const status = statusesFromApi.find(
+    (s) => s.id === (task.listStatusId ?? (taskAny.list_status_id as string | null)),
+  );
+  const taskType = taskTypes?.find((tt) => tt.id === task.taskTypeId);
   
   // Handle date fields from API (both camelCase and snake_case)
   const planStartStr = task.planStart || (task as any).plan_start;
@@ -208,7 +292,8 @@ export default function TaskViewPage() {
   const assigneeId = task.assigneeId || (task as any).assignee_id;
   const assigneeName = task.assigneeName || (task as any).assignee_name;
   const assigneeAvatar = task.assigneeAvatar || (task as any).assignee_avatar;
-  const assignee = assigneeId ? getUserById(assigneeId) : null;
+  // Assignee resolved from API joined fields (assigneeName / assigneeAvatar)
+  const assignee = null;
   
   // Handle priority from API
   const priorityValue = task.priority || (task as any).priority || "normal";
@@ -231,11 +316,14 @@ export default function TaskViewPage() {
   };
 
   const handleEditComment = (commentId: string) => {
-    const commentText = String(rawComment.commentText || rawComment.comment_text || "");
-                    if (commentText) {
-                      setEditingCommentId(commentId);
-                      setEditingCommentContent(commentText);
-                    }
+    const comment = comments.find((c) => c.id === commentId);
+    if (!comment) return;
+    const raw = comment as unknown as Record<string, unknown>;
+    const commentText = String(raw.commentText ?? raw.comment_text ?? "");
+    if (commentText) {
+      setEditingCommentId(commentId);
+      setEditingCommentContent(commentText);
+    }
   };
 
   const handleSaveEditComment = () => {
@@ -300,7 +388,7 @@ export default function TaskViewPage() {
       });
   };
 
-  const sortedComments: Comment[] = [];
+  // comments already in state; sorted display handled in JSX
 
   return (
     <div className="flex flex-col gap-6 p-6 max-w-5xl mx-auto">
@@ -312,10 +400,10 @@ export default function TaskViewPage() {
         <div className="flex-1">
           <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
             <span className="font-mono">{task.displayId}</span>
-            {list && (
+            {listNameDisplay && (
               <>
                 <span>•</span>
-                <span>{list.name}</span>
+                <span>{listNameDisplay}</span>
               </>
             )}
           </div>
@@ -464,7 +552,7 @@ export default function TaskViewPage() {
                 <div className="space-y-4">
                   {comments.map((comment) => {
                     // Handle both camelCase and snake_case from API
-                    const rawComment = comment as Record<string, unknown>;
+                    const rawComment = comment as unknown as Record<string, unknown>;
                     const commentAuthorName = String(rawComment.authorName || rawComment.author_name || "User");
                     const commentAuthorAvatar = rawComment.authorAvatar || rawComment.author_avatar || null;
                     const commentAuthorId = String(rawComment.authorId || rawComment.author_id || "");
@@ -587,18 +675,10 @@ export default function TaskViewPage() {
                   {language === "th" ? "ผู้รับผิดชอบ" : "Assignee"}
                 </Label>
                 <div className="flex flex-wrap gap-2">
-                  {assignee ? (
+                  {assigneeName ? (
                     <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-muted">
                       <Avatar className="h-5 w-5">
-                        <AvatarImage src={assignee.avatar} />
-                        <AvatarFallback className="text-[10px]">{assignee.name.charAt(0)}</AvatarFallback>
-                      </Avatar>
-                      <span className="text-xs">{assignee.name}</span>
-                    </div>
-                  ) : assigneeName ? (
-                    <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-muted">
-                      <Avatar className="h-5 w-5">
-                        <AvatarImage src={assigneeAvatar || undefined} />
+                        <AvatarImage src={assigneeAvatar ?? undefined} />
                         <AvatarFallback className="text-[10px]">{assigneeName.charAt(0)}</AvatarFallback>
                       </Avatar>
                       <span className="text-xs">{assigneeName}</span>
@@ -662,6 +742,56 @@ export default function TaskViewPage() {
                   <span className="text-sm">{task.actualHours} {language === "th" ? "ชั่วโมง" : "hours"}</span>
                 </div>
               )}
+
+              {/* Time Tracking */}
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Clock className="h-3 w-3" />
+                  {language === "th" ? "จับเวลา" : "Time Tracker"}
+                </Label>
+                <div className="flex items-center gap-2">
+                  {runningTimer ? (
+                    <>
+                      <Badge variant="destructive" className="font-mono animate-pulse">
+                        {formatElapsed(elapsedSeconds)}
+                      </Badge>
+                      {canTimer && (
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={toggleTimer}
+                        className="text-destructive"
+                      >
+                        <Square className="h-3 w-3 mr-1" />
+                        {language === "th" ? "หยุด" : "Stop"}
+                      </Button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {(task as any).accumulatedMinutes > 0 && (
+                        <span className="text-sm text-muted-foreground">
+                          {(() => {
+                            const h = Math.floor((task as any).accumulatedMinutes / 60);
+                            const m = (task as any).accumulatedMinutes % 60;
+                            return h > 0 ? `${h}h ${m}m` : `${m}m`;
+                          })()}
+                        </span>
+                      )}
+                      {canTimer && (
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={toggleTimer}
+                      >
+                        <Play className="h-3 w-3 mr-1" />
+                        {language === "th" ? "เริ่ม" : "Start"}
+                      </Button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
 
               {/* Tags */}
               {task.tags && task.tags.length > 0 && (

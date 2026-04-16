@@ -28,6 +28,7 @@ export interface ApiTaskRow {
   completed_at: string | null;
   status: string;
   display_order: number;
+  estimate_progress: number | null;
   blocked_note: string | null;
   tags: string[];
   created_at: string;
@@ -152,6 +153,7 @@ export interface MyTasksRow {
   story_points: number | null;
   time_estimate_hours: number | null;
   accumulated_minutes: number;
+  estimate_progress: number | null;
   created_at: string;
   updated_at: string;
   // joined
@@ -177,13 +179,17 @@ export interface CalendarTaskRow {
   deadline: string | null;
   plan_start: string | null;
   plan_finish: string | null;
+  duration_days: number | null;
   status: string;
   tags: string[];
   story_points: number | null;
+  accumulated_minutes: number;
+  time_estimate_hours: number | null;
   created_at: string;
   // joined
   status_name: string | null;
   status_color: string | null;
+  list_name: string | null;
   assignee_name: string;
   assignee_avatar: string | null;
   assignee_id: string;
@@ -223,4 +229,11 @@ export const tasksApi = {
   updateStatus: (id: string, data: UpdateTaskStatusPayload) => api.patch<ApiTaskDetail>(`/tasks/${id}/status`, data),
   reorder:      (data: ReorderTasksPayload) => api.put<null>("/tasks/reorder", data),
   delete:       (id: string) => api.delete<null>(`/tasks/${id}`),
+  addTime:      (id: string, minutes: number) => api.put<ApiTaskDetail>(`/tasks/${id}`, { accumulatedMinutes: minutes }),
+  
+  // Timer (server-side)
+  startTimer:  (id: string) => api.post<{ id: string; taskId: string; startedAt: string }>(`/tasks/${id}/time/start`, {}),
+  stopTimer:   (id: string) => api.post<{ durationMin: number }>(`/tasks/${id}/time/pause`, {}),
+  getTimer:    (id: string) => api.get<{ id: string; taskId: string; startedAt: string; endedAt: string | null }[]>(`/tasks/${id}/time`),
+  getRunningTimers: () => api.get<{ id: string; taskId: string; startedAt: string }[]>(`/tasks/time/running`),
 };

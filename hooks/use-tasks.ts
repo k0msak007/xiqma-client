@@ -1,24 +1,32 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { tasksApi, type Task, type TaskDetail, type CreateTaskPayload, type UpdateTaskPayload, type UpdateTaskStatusPayload, type ReorderTasksPayload } from "@/lib/api/tasks";
+import {
+  tasksApi,
+  type ApiTaskRow,
+  type ApiTaskDetail,
+  type CreateTaskPayload,
+  type UpdateTaskPayload,
+  type UpdateTaskStatusPayload,
+  type ReorderTasksPayload,
+} from "@/lib/api/tasks";
 
 interface UseTasksOptions {
-  initialData?: Task[];
+  initialData?: ApiTaskRow[];
 }
 
 export function useTasks(options: UseTasksOptions = {}) {
-  const [tasks, setTasks] = useState<Task[]>(options.initialData || []);
-  const [task, setTask] = useState<TaskDetail | null>(null);
+  const [tasks,     setTasks]     = useState<ApiTaskRow[]>(options.initialData ?? []);
+  const [task,      setTask]      = useState<ApiTaskDetail | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error,     setError]     = useState<string | null>(null);
 
-  const fetchTasks = useCallback(async (params?: Parameters<typeof tasksApi.list>[0]) => {
+  const fetchTasks = useCallback(async (params: Parameters<typeof tasksApi.list>[0]) => {
     setIsLoading(true);
     setError(null);
     try {
       const response = await tasksApi.list(params);
-      setTasks(response.rows);
+      setTasks(response.data);
       return response;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch tasks");
@@ -48,7 +56,7 @@ export function useTasks(options: UseTasksOptions = {}) {
     setError(null);
     try {
       const response = await tasksApi.create(data);
-      setTasks((prev) => [...prev, response]);
+      setTask(response);
       return response;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create task");
@@ -63,10 +71,7 @@ export function useTasks(options: UseTasksOptions = {}) {
     setError(null);
     try {
       const response = await tasksApi.update(id, data);
-      setTasks((prev) => prev.map((t) => (t.id === id ? response : t)));
-      if (task?.id === id) {
-        setTask((prev) => (prev ? { ...prev, ...response } : null));
-      }
+      if (task?.id === id) setTask(response);
       return response;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update task");
@@ -74,17 +79,14 @@ export function useTasks(options: UseTasksOptions = {}) {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [task?.id]);
 
   const updateTaskStatus = useCallback(async (id: string, data: UpdateTaskStatusPayload) => {
     setIsLoading(true);
     setError(null);
     try {
       const response = await tasksApi.updateStatus(id, data);
-      setTasks((prev) => prev.map((t) => (t.id === id ? response : t)));
-      if (task?.id === id) {
-        setTask((prev) => (prev ? { ...prev, ...response } : null));
-      }
+      if (task?.id === id) setTask(response);
       return response;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update task status");
@@ -92,14 +94,13 @@ export function useTasks(options: UseTasksOptions = {}) {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [task?.id]);
 
   const reorderTasks = useCallback(async (data: ReorderTasksPayload) => {
     setIsLoading(true);
     setError(null);
     try {
       await tasksApi.reorder(data);
-      await fetchTasks();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to reorder tasks");
       throw err;
