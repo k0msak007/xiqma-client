@@ -769,11 +769,11 @@ export default function TaskViewPage() {
                     </>
                   ) : (
                     <>
-                      {(task as any).accumulatedMinutes > 0 && (
+                      {(task as any).accumulated_minutes > 0 && (
                         <span className="text-sm text-muted-foreground">
                           {(() => {
-                            const h = Math.floor((task as any).accumulatedMinutes / 60);
-                            const m = (task as any).accumulatedMinutes % 60;
+                            const h = Math.floor((task as any).accumulated_minutes / 60);
+                            const m = (task as any).accumulated_minutes % 60;
                             return h > 0 ? `${h}h ${m}m` : `${m}m`;
                           })()}
                         </span>

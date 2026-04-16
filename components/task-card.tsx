@@ -52,6 +52,12 @@ export function TaskCard({ task, onClick, isSelected, variant = "board", onUpdat
   const user = useAuthStore((s) => s.user);
   const [runningTimer, setRunningTimer] = useState<{ id: string; startedAt: string } | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [localTimeSpent, setLocalTimeSpent] = useState(task.timeSpent || 0);
+
+  // Sync localTimeSpent when task.timeSpent changes
+  useEffect(() => {
+    setLocalTimeSpent(task.timeSpent || 0);
+  }, [task.timeSpent]);
 
   // Check if user can timer (admin or assignee)
   const canTimer = user && (user.role === "admin" || task.assigneeIds.includes(user.id));
@@ -129,6 +135,10 @@ export function TaskCard({ task, onClick, isSelected, variant = "board", onUpdat
         setRunningTimer(null);
         setElapsedSeconds(0);
         toast.success("Timer stopped");
+        // Refresh task to get updated accumulated time
+        const updatedTask = await tasksApi.get(task.id);
+        const newTimeSpent = (updatedTask as any).accumulated_minutes || (updatedTask as any).accumulatedMinutes || 0;
+        setLocalTimeSpent(newTimeSpent);
       } else {
         // Start timer
         const session = await tasksApi.startTimer(task.id);
@@ -324,11 +334,11 @@ export function TaskCard({ task, onClick, isSelected, variant = "board", onUpdat
                 {task.comments.length}
               </div>
             )}
-            {(task.timeSpent || 0) > 0 || elapsedSeconds > 0 ? (
+            {(localTimeSpent || 0) > 0 || elapsedSeconds > 0 ? (
               <div className="flex items-center gap-1">
                 <Clock className="h-3 w-3" />
                 {(() => {
-                  const totalMinutes = (task.timeSpent || 0) + Math.floor(elapsedSeconds / 60);
+                  const totalMinutes = (localTimeSpent || 0) + Math.floor(elapsedSeconds / 60);
                   const h = Math.floor(totalMinutes / 60);
                   const m = totalMinutes % 60;
                   return h > 0 ? `${h}h ${m}m` : `${m}m`;

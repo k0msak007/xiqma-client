@@ -68,16 +68,22 @@ interface TaskTableRowProps {
   onDelete?: (taskId: string) => Promise<void>;
 }
 
-export function TaskTableRow({ task, onClick, isSelected, statuses, onUpdate }: TaskTableRowProps) {
+export function TaskTableRow({ task, onClick, isSelected, statuses, onUpdate, onDelete }: TaskTableRowProps) {
   const store = useTaskStore();
   const { updateTask: storeUpdateTask, deleteTask, taskTypes } = store;
   const user = useAuthStore((s) => s.user);
   const [runningTimer, setRunningTimer] = useState<{ id: string; startedAt: string } | null>(null);
   const [elapsedTime, setElapsedTime] = useState(0);
+  const [localTimeSpent, setLocalTimeSpent] = useState(task.timeSpent || 0);
   const [showReassignDialog, setShowReassignDialog] = useState(false);
   const [selectedAssignee, setSelectedAssignee] = useState<string>(task.assigneeIds[0] || "");
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loadingEmployees, setLoadingEmployees] = useState(false);
+
+  // Sync localTimeSpent when task.timeSpent changes
+  useEffect(() => {
+    setLocalTimeSpent(task.timeSpent || 0);
+  }, [task.timeSpent]);
 
   // Check if user can timer (admin or assignee)
   const canTimer = user && (user.role === "admin" || task.assigneeIds.includes(user.id));
@@ -158,7 +164,7 @@ const variance = useMemo(() => {
   // Handle update - call API if available, otherwise update local store
   const handleUpdate = async (updates: Partial<Task>) => {
     // If assigning to someone, also set assigneeId for API compatibility
-    const apiUpdates = { ...updates };
+    const apiUpdates: any = { ...updates };
     if (updates.assigneeIds && updates.assigneeIds.length > 0) {
       apiUpdates.assigneeId = updates.assigneeIds[0];
     }
@@ -180,6 +186,11 @@ const variance = useMemo(() => {
         await tasksApi.stopTimer(task.id);
         setRunningTimer(null);
         setElapsedTime(0);
+        toast.success("Timer stopped");
+        // Refresh task to get updated accumulated time
+        const updatedTask = await tasksApi.get(task.id);
+        const newTimeSpent = (updatedTask as any).accumulated_minutes || (updatedTask as any).accumulatedMinutes || 0;
+        setLocalTimeSpent(newTimeSpent);
       } else {
         // Start timer
         const session = await tasksApi.startTimer(task.id);
@@ -202,17 +213,13 @@ const variance = useMemo(() => {
     }
   };
 
-  // Old functions - kept for compatibility but not used
-  const handleStartTracking = () => {};
-  const handleStopTracking = () => {};
-
   const handleReassign = async () => {
     if (onUpdate) {
       // Pass both assigneeId (for API) and assigneeIds (for local store)
       await onUpdate(task.id, { 
         assigneeId: selectedAssignee || null,
         assigneeIds: selectedAssignee ? [selectedAssignee] : []
-      });
+      } as any);
       toast.success("Task reassigned successfully");
     }
     setShowReassignDialog(false);
@@ -579,10 +586,10 @@ const variance = useMemo(() => {
             ) : (
               <>
                 <span className="text-xs text-muted-foreground min-w-[40px]">
-                  {task.timeSpent || elapsedTime > 0 ? (
+                  {localTimeSpent || elapsedTime > 0 ? (
                     <>
                       {(() => {
-                        const totalMinutes = task.timeSpent + Math.floor(elapsedTime / 60);
+                        const totalMinutes = localTimeSpent + Math.floor(elapsedTime / 60);
                         const h = Math.floor(totalMinutes / 60);
                         const m = totalMinutes % 60;
                         return h > 0 ? `${h}h ${m}m` : `${m}m`;
