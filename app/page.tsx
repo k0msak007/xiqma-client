@@ -65,7 +65,7 @@ export default function DashboardPage() {
       .then(([my, cal, emp]) => {
         setMyTasks(my);
         setTeamTasks(cal);
-        setEmployees(emp.rows);
+        setEmployees(emp);
       })
       .catch(console.error)
       .finally(() => setLoading(false));

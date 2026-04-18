@@ -267,11 +267,11 @@ const variance = useMemo(() => {
         <td className="p-2" onClick={onClick}>
           <div className="flex items-center gap-2">
             <Checkbox 
-              checked={status?.type === "done" || status?.type === "closed"}
-              onCheckedChange={(checked) => {
-                const newStatus = checked 
-                  ? statuses.find(s => s.type === "done")?.id 
-                  : statuses.find(s => s.type === "open")?.id;
+              checked={status?.type === "completed" || status?.type === "closed"}
+                onCheckedChange={(checked) => {
+                  const newStatus = checked 
+                    ? statuses.find(s => s.type === "completed")?.id 
+                    : statuses.find(s => s.type === "pending")?.id;
                 if (newStatus) {
                   handleUpdate({ 
                     statusId: newStatus,
@@ -469,7 +469,7 @@ const variance = useMemo(() => {
                 )}
               >
                 <CalendarIcon className="mr-1 h-3 w-3" />
-                {task.actualStart 
+                {task.actualStart && !isNaN(new Date(task.actualStart).getTime())
                   ? format(new Date(task.actualStart), "MM/dd") 
                   : "-"}
               </Button>
@@ -477,7 +477,7 @@ const variance = useMemo(() => {
             <PopoverContent className="w-auto p-0" align="start">
               <Calendar
                 mode="single"
-                selected={task.actualStart ? new Date(task.actualStart) : undefined}
+                selected={task.actualStart && !isNaN(new Date(task.actualStart).getTime()) ? new Date(task.actualStart) : undefined}
                 onSelect={(date) => handleUpdate({ actualStart: date || undefined })}
                 initialFocus
               />
@@ -498,7 +498,7 @@ const variance = useMemo(() => {
                 )}
               >
                 <CalendarIcon className="mr-1 h-3 w-3" />
-                {task.actualFinish 
+                {task.actualFinish && !isNaN(new Date(task.actualFinish).getTime())
                   ? format(new Date(task.actualFinish), "MM/dd") 
                   : "-"}
               </Button>
@@ -506,7 +506,7 @@ const variance = useMemo(() => {
             <PopoverContent className="w-auto p-0" align="start">
               <Calendar
                 mode="single"
-                selected={task.actualFinish ? new Date(task.actualFinish) : undefined}
+                selected={task.actualFinish && !isNaN(new Date(task.actualFinish).getTime()) ? new Date(task.actualFinish) : undefined}
                 onSelect={(date) => handleUpdate({ actualFinish: date || undefined })}
                 initialFocus
               />

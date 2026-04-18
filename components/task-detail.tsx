@@ -62,6 +62,7 @@ import { useTaskStore } from "@/lib/store";
 import { useListTaskStore } from "@/lib/list-task-store";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 import { useAuthStore } from "@/lib/auth-store";
+import type { AuthUser } from "@/lib/api/auth";
 import { getCachedEmployee } from "@/lib/employee-cache";
 import { getTagByName } from "@/lib/mock-data";
 import { tasksApi } from "@/lib/api/tasks";
@@ -73,14 +74,16 @@ import {
   type StoryPoints,
 } from "@/lib/types";
 import { format } from "date-fns";
+import { toast } from "sonner";
 
 interface TaskDetailProps {
   task: Task;
   onClose: () => void;
   onTaskChange?: (task: Task) => void;
+  readOnly?: boolean;
 }
 
-export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
+export function TaskDetail({ task, onClose, onTaskChange, readOnly = false }: TaskDetailProps) {
   const router = useRouter();
   const { taskTypes } = useTaskStore();
   const {
@@ -117,10 +120,12 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
   const [newSubtask, setNewSubtask] = useState("");
   const [runningTimer, setRunningTimer] = useState<{ id: string; startedAt: string } | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [currentTask, setCurrentTask] = useState(task);
   const [showAssigneeDialog, setShowAssigneeDialog] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [employees, setEmployees] = useState<{ id: string; name: string; avatarUrl: string | null }[]>([]);
+  const [dueDateOpen, setDueDateOpen] = useState(false);
+  const [actualStartOpen, setActualStartOpen] = useState(false);
+  const [actualFinishOpen, setActualFinishOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const listName = currentList?.name;
@@ -148,17 +153,12 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
     }
   }, [task.id, loadSubtasks, loadComments, loadAttachments]);
 
-  // Sync currentTask when task prop changes
-  useEffect(() => {
-    setCurrentTask(task);
-  }, [task.id, task.timeSpent]);
-
   // Load employees for assignee dialog
   useEffect(() => {
     if (showAssigneeDialog && employees.length === 0) {
       import("@/lib/api/employees").then(({ employeesApi }) => {
         employeesApi.list({ isActive: true, limit: 200 }).then((res) => {
-          setEmployees(res.rows.map((e) => ({ id: e.id, name: e.name, avatarUrl: e.avatarUrl })));
+          setEmployees(res.map((e) => ({ id: e.id, name: e.name, avatarUrl: e.avatarUrl })));
         }).catch(() => {});
       });
     }
@@ -229,16 +229,34 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
   };
 
   const handleDueDateChange = (date: Date | undefined) => {
+    setDueDateOpen(false);
     apiUpdateTask(task.id, { deadline: date?.toISOString() ?? null });
   };
 
-  const handleActualStartChange = (date: Date | undefined) => {
-    // actualStart maps to startedAt — not in UpdateTaskPayload directly, kept as local only
-    // No API field for this; skip or extend payload if needed
+  const handleActualStartChange = async (date: Date | undefined) => {
+    if (!date) return;
+    setActualStartOpen(false);
+    try {
+      await tasksApi.update(task.id, { startedAt: date.toISOString() });
+      await refreshTask(task.id);
+      toast.success("Actual start saved");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to update start date");
+    }
   };
 
-  const handleActualFinishChange = (date: Date | undefined) => {
-    // actualFinish maps to completedAt — not directly settable; skip
+  const handleActualFinishChange = async (date: Date | undefined) => {
+    if (!date) return;
+    setActualFinishOpen(false);
+    try {
+      await tasksApi.update(task.id, { completedAt: date.toISOString() });
+      await refreshTask(task.id);
+      toast.success("Actual finish saved");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to update finish date");
+    }
   };
 
   const handleToggleSubtask = (subtaskId: string) => {
@@ -376,6 +394,7 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
               <DropdownMenuItem
                 className="text-destructive"
                 onClick={handleDelete}
+                disabled={readOnly}
               >
                 <Trash2 className="mr-2 h-4 w-4" />
                 Delete
@@ -404,8 +423,8 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
               />
             ) : (
               <h2
-                className="cursor-pointer text-lg font-semibold hover:text-primary"
-                onClick={() => setIsEditingTitle(true)}
+                className={cn("text-lg font-semibold", !readOnly && "cursor-pointer hover:text-primary")}
+                onClick={() => !readOnly && setIsEditingTitle(true)}
               >
                 {task.title}
               </h2>
@@ -415,8 +434,12 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
           {/* Quick Actions Row */}
           <div className="flex flex-wrap items-center gap-2">
             {/* Status */}
-            <Select value={task.statusId} onValueChange={handleStatusChange}>
-              <SelectTrigger className="h-8 w-[140px]">
+            <Select 
+              value={task.statusId} 
+              onValueChange={readOnly ? undefined : handleStatusChange}
+              disabled={readOnly}
+            >
+              <SelectTrigger className="h-8 w-[140px]" disabled={readOnly}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -437,9 +460,10 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
             {/* Priority */}
             <Select
               value={task.priority}
-              onValueChange={(v) => handlePriorityChange(v as Priority)}
+              onValueChange={readOnly ? undefined : (v) => handlePriorityChange(v as Priority)}
+              disabled={readOnly}
             >
-              <SelectTrigger className="h-8 w-[120px]">
+              <SelectTrigger className="h-8 w-[120px]" disabled={readOnly}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -460,9 +484,10 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
             {/* Story Points */}
             <Select
               value={task.storyPoints?.toString() || ""}
-              onValueChange={handleStoryPointsChange}
+              onValueChange={readOnly ? undefined : handleStoryPointsChange}
+              disabled={readOnly}
             >
-              <SelectTrigger className="h-8 w-[100px]">
+              <SelectTrigger className="h-8 w-[100px]" disabled={readOnly}>
                 <SelectValue placeholder="SP" />
               </SelectTrigger>
               <SelectContent>
@@ -505,6 +530,7 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                     variant="ghost"
                     size="sm"
                     className="h-7 px-2"
+                    disabled={readOnly}
                     onClick={() => setShowAssigneeDialog(true)}
                   >
                     <Plus className="mr-1 h-3 w-3" />
@@ -521,11 +547,12 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                 <p className="mb-1 text-xs font-medium text-muted-foreground">
                   Due Date
                 </p>
-                <Popover>
+                <Popover open={dueDateOpen} onOpenChange={readOnly ? undefined : setDueDateOpen}>
                   <PopoverTrigger asChild>
                     <Button
                       variant="outline"
                       size="sm"
+                      disabled={readOnly}
                       className={cn(
                         "h-7 justify-start text-left font-normal",
                         !task.dueDate && "text-muted-foreground",
@@ -535,7 +562,7 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                       )}
                     >
                       <CalendarIcon className="mr-2 h-3 w-3" />
-                      {task.dueDate
+                      {task.dueDate && !isNaN(new Date(task.dueDate).getTime())
                         ? format(new Date(task.dueDate), "MMM d, yyyy")
                         : "Set date"}
                     </Button>
@@ -543,7 +570,7 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                   <PopoverContent className="w-auto p-0" align="start">
                     <CalendarComponent
                       mode="single"
-                      selected={task.dueDate ? new Date(task.dueDate) : undefined}
+                      selected={task.dueDate && !isNaN(new Date(task.dueDate).getTime()) ? new Date(task.dueDate) : undefined}
                       onSelect={handleDueDateChange}
                       initialFocus
                     />
@@ -560,18 +587,19 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                   Actual Dates
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  <Popover>
+                  <Popover open={readOnly ? false : actualStartOpen} onOpenChange={readOnly ? undefined : setActualStartOpen}>
                     <PopoverTrigger asChild>
                       <Button
                         variant="outline"
                         size="sm"
+                        disabled={readOnly}
                         className={cn(
                           "h-7 justify-start text-left font-normal",
                           !task.actualStart && "text-muted-foreground"
                         )}
                       >
                         <Play className="mr-1.5 h-3 w-3" />
-                        {task.actualStart
+                        {task.actualStart && !isNaN(new Date(task.actualStart).getTime())
                           ? format(new Date(task.actualStart), "MMM d")
                           : "Start"}
                       </Button>
@@ -580,7 +608,7 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                       <CalendarComponent
                         mode="single"
                         selected={
-                          task.actualStart
+                          task.actualStart && !isNaN(new Date(task.actualStart).getTime())
                             ? new Date(task.actualStart)
                             : undefined
                         }
@@ -590,18 +618,19 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                     </PopoverContent>
                   </Popover>
 
-                  <Popover>
+                  <Popover open={readOnly ? false : actualFinishOpen} onOpenChange={readOnly ? undefined : setActualFinishOpen}>
                     <PopoverTrigger asChild>
                       <Button
                         variant="outline"
                         size="sm"
+                        disabled={readOnly}
                         className={cn(
                           "h-7 justify-start text-left font-normal",
                           !task.actualFinish && "text-muted-foreground"
                         )}
                       >
                         <Square className="mr-1.5 h-3 w-3" />
-                        {task.actualFinish
+                        {task.actualFinish && !isNaN(new Date(task.actualFinish).getTime())
                           ? format(new Date(task.actualFinish), "MMM d")
                           : "Finish"}
                       </Button>
@@ -610,7 +639,7 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                       <CalendarComponent
                         mode="single"
                         selected={
-                          task.actualFinish
+                          task.actualFinish && !isNaN(new Date(task.actualFinish).getTime())
                             ? new Date(task.actualFinish)
                             : undefined
                         }
@@ -683,17 +712,17 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                       <span className="text-xs font-medium">
                         {runningTimer ? (
                           <>
-                            {formatTimeSpent(currentTask.timeSpent)}
+                            {formatTimeSpent(task.timeSpent)}
                             <span className="ml-1 text-green-500">
                               +{formatTimeSpent(Math.floor(elapsedSeconds / 60))}
                             </span>
                           </>
                         ) : (
-                          formatTimeSpent(currentTask.timeSpent)
+                          formatTimeSpent(task.timeSpent)
                         )}
                       </span>
                     </div>
-                    {canTimer && (
+                    {canTimer && !readOnly && (
                     <Button
                       variant={isTimeTracking ? "destructive" : "outline"}
                       size="sm"
@@ -807,9 +836,9 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                 >
                   <Checkbox
                     checked={subtask.completed}
-                    onCheckedChange={() => handleToggleSubtask(subtask.id)}
+                    onCheckedChange={() => !readOnly && handleToggleSubtask(subtask.id)}
                     className="h-4 w-4"
-                    disabled={subtask.id.startsWith("stub-")}
+                    disabled={subtask.id.startsWith("stub-") || readOnly}
                   />
                   <span
                     className={cn(
@@ -825,7 +854,7 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                       variant="ghost"
                       size="icon"
                       className="h-6 w-6 opacity-0 group-hover:opacity-100"
-                      onClick={() => handleDeleteSubtask(subtask.id)}
+                      onClick={() => !readOnly && handleDeleteSubtask(subtask.id)}
                     >
                       <Trash2 className="h-3 w-3" />
                     </Button>
@@ -839,9 +868,10 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                 <Input
                   value={newSubtask}
                   onChange={(e) => setNewSubtask(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleAddSubtask()}
+                  onKeyDown={(e) => e.key === "Enter" && !readOnly && handleAddSubtask()}
                   placeholder="Add subtask..."
                   className="h-8 flex-1"
+                  disabled={readOnly}
                 />
               </div>
             </div>
@@ -863,7 +893,7 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                 .filter((c) => !c.id.startsWith("stub-"))
                 .map((comment) => {
                   const author = getCachedEmployee(comment.authorId);
-                  const canEdit = user?.userId === comment.authorId;
+                  const canEdit = user?.id === comment.authorId;
                   return (
                     <div key={comment.id} className="flex gap-2">
                       <Avatar className="h-7 w-7 shrink-0">
@@ -878,7 +908,9 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                             {author?.name ?? "Unknown"}
                           </span>
                           <span className="text-xs text-muted-foreground">
-                            {format(new Date(comment.createdAt), "MMM d")}
+                            {comment.createdAt && !isNaN(new Date(comment.createdAt).getTime())
+                              ? format(new Date(comment.createdAt), "MMM d")
+                              : ""}
                           </span>
                         </div>
                         <p className="text-sm">{comment.content}</p>
@@ -886,7 +918,7 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                           <div className="mt-1 flex gap-2">
                             <button
                               className="text-xs text-muted-foreground hover:text-foreground"
-                              onClick={() => deleteComment(task.id, comment.id)}
+                              onClick={() => !readOnly && deleteComment(task.id, comment.id)}
                             >
                               Delete
                             </button>
@@ -899,8 +931,9 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
 
               {/* Add Comment */}
               <AddCommentForm
-                onSubmit={(text) => addComment(task.id, text)}
+                onSubmit={(text) => !readOnly && addComment(task.id, text)}
                 currentUser={user}
+                disabled={readOnly}
               />
             </div>
           </div>
@@ -920,6 +953,7 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                 variant="ghost"
                 size="sm"
                 className="h-7 px-2"
+                disabled={readOnly}
                 onClick={() => fileInputRef.current?.click()}
               >
                 <Upload className="mr-1 h-3 w-3" />
@@ -929,6 +963,7 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                 ref={fileInputRef}
                 type="file"
                 multiple
+                disabled={readOnly}
                 onChange={handleFileUpload}
                 className="hidden"
               />
@@ -966,7 +1001,7 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7 opacity-0 group-hover:opacity-100"
-                        onClick={() => handleRemoveAttachment(attachment.id)}
+                        onClick={() => !readOnly && handleRemoveAttachment(attachment.id)}
                       >
                         <Trash2 className="h-3 w-3" />
                       </Button>
@@ -984,8 +1019,8 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
       {/* Footer */}
       <div className="border-t px-4 py-3">
         <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>Created {format(new Date(task.createdAt), "MMM d, yyyy")}</span>
-          <span>Updated {format(new Date(task.updatedAt), "MMM d, yyyy")}</span>
+          <span>Created {task.createdAt && !isNaN(new Date(task.createdAt).getTime()) ? format(new Date(task.createdAt), "MMM d, yyyy") : "-"}</span>
+          <span>Updated {task.updatedAt && !isNaN(new Date(task.updatedAt).getTime()) ? format(new Date(task.updatedAt), "MMM d, yyyy") : "-"}</span>
         </div>
       </div>
 
@@ -1060,9 +1095,11 @@ export function TaskDetail({ task, onClose, onTaskChange }: TaskDetailProps) {
 function AddCommentForm({
   onSubmit,
   currentUser,
+  disabled,
 }: {
   onSubmit: (text: string) => void;
-  currentUser: { userId: string; name: string } | null;
+  currentUser: AuthUser | null;
+  disabled?: boolean;
 }) {
   const [text, setText] = useState("");
 
@@ -1085,9 +1122,10 @@ function AddCommentForm({
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSubmit()}
           placeholder="Add a comment..."
+          disabled={disabled}
           className="h-8 flex-1"
         />
-        <Button size="sm" className="h-8" onClick={handleSubmit} disabled={!text.trim()}>
+        <Button size="sm" className="h-8" onClick={handleSubmit} disabled={!text.trim() || disabled}>
           Send
         </Button>
       </div>

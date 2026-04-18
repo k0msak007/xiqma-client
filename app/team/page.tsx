@@ -88,23 +88,15 @@ export default function TeamPage() {
   const load = async () => {
     try {
       setIsLoading(true);
-      const promises = [
+      const [empRes, attRes] = await Promise.all([
         employeesApi.listAll(),
         attendanceApi.getTeamAttendance().catch(() => []),
-      ];
+      ]);
       
-      // Add pending leaves fetch if user can manage
-      if (canManageLeaves) {
-        promises.push(leaveApi.list({ status: "pending" }).catch(() => []));
-      }
+      setEmployees(empRes as Employee[]);
       
-      const results = await Promise.all(promises);
-      setEmployees(results[0] as Employee[]);
-      
-      // Map attendance by employee id
-      const attRes = results[1] as any[];
       const attMap: Record<string, { checkIn: string | null; checkOut: string | null; status: string | null }> = {};
-      for (const emp of attRes) {
+      for (const emp of attRes as any[]) {
         attMap[emp.id] = {
           checkIn: emp.checkIn,
           checkOut: emp.checkOut,
@@ -113,9 +105,9 @@ export default function TeamPage() {
       }
       setTeamAttendance(attMap);
       
-      // Set pending leaves
-      if (canManageLeaves && results[2]) {
-        setPendingLeaves(results[2] as LeaveRequest[]);
+      if (canManageLeaves) {
+        const leaveRes = await leaveApi.list({ status: "pending" }).catch(() => []) as LeaveRequest[];
+        setPendingLeaves(leaveRes);
       }
     } catch {
       toast.error("โหลดข้อมูลพนักงานไม่สำเร็จ");

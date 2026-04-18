@@ -61,11 +61,10 @@ export function SpaceMembersDialog({ open, onOpenChange, spaceId, spaceName }: S
         employeesApi.list({ isActive: true, limit: 200 }),
       ]);
       
-      // Handle both array response and { rows: [] } response
-      const employeeList = Array.isArray(employeesRes) ? employeesRes : (employeesRes.rows || []);
+      const empList = (employeesRes as unknown as { rows?: { id: string; name: string; email: string; avatarUrl?: string }[] }).rows || employeesRes as unknown as { id: string; name: string; email: string; avatarUrl?: string }[];
       
       setMembers(spaceDetail.members || []);
-      setAllEmployees(employeeList);
+      setAllEmployees(Array.isArray(empList) ? empList : []);
     } catch (err) {
       console.error("Failed to load data:", err);
       toast.error("Failed to load data");

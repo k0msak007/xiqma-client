@@ -36,7 +36,7 @@ interface WorkspaceStore {
   deleteFolder: (id: string) => Promise<void>;
 
   // List CRUD
-  createList: (payload: { name: string; spaceId: string; folderId?: string }) => Promise<List | null>;
+  createList: (payload: { name: string; spaceId: string; folderId?: string; color?: string }) => Promise<List | null>;
   deleteList: (id: string) => Promise<void>;
 }
 

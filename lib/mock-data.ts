@@ -390,11 +390,11 @@ export const users: User[] = [
 
 // Job Statuses - Master data for task status workflow
 export const statuses: Status[] = [
-  { id: "status-1", name: "To Do", color: "#6b7280", order: 0, type: "open", pointCountType: "not_counted" },
+{ id: "status-1", name: "To Do", color: "#6b7280", order: 0, type: "pending", pointCountType: "not_counted" },
   { id: "status-2", name: "In Progress", color: "#3b82f6", order: 1, type: "in_progress", pointCountType: "in_progress" },
-  { id: "status-3", name: "In Review", color: "#f59e0b", order: 2, type: "review", pointCountType: "in_progress" },
-  { id: "status-4", name: "Done", color: "#10b981", order: 3, type: "done", pointCountType: "complete" },
-  { id: "status-5", name: "Closed", color: "#6366f1", order: 4, type: "closed", pointCountType: "complete" },
+  { id: "status-3", name: "Review", color: "#f59e0b", order: 2, type: "review", pointCountType: "in_progress" },
+  { id: "status-4", name: "Done", color: "#10b981", order: 3, type: "completed", pointCountType: "complete" },
+  { id: "status-5", name: "Closed", color: "#6366f1", order: 4, type: "cancelled", pointCountType: "complete" },
 ];
 
 // Alias for backward compatibility
@@ -698,6 +698,7 @@ export const tasks: Task[] = [
   },
   {
     id: "task-8",
+    taskId: "TASK-008",
     title: "Set up CI/CD pipeline",
     description: "Configure automated testing and deployment",
     statusId: "status-4",
@@ -720,6 +721,7 @@ export const tasks: Task[] = [
   },
   {
     id: "task-9",
+    taskId: "TASK-009",
     title: "Button component variants",
     description: "Create all button variants as per design system",
     statusId: "status-4",
@@ -741,6 +743,7 @@ export const tasks: Task[] = [
   },
   {
     id: "task-10",
+    taskId: "TASK-010",
     title: "Input field components",
     description: "Build input components with validation states",
     statusId: "status-2",

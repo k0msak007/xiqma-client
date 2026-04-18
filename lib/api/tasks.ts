@@ -123,6 +123,8 @@ export interface UpdateTaskPayload {
   tags?: string[];
   estimateProgress?: number | null;
   blockedNote?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
 }
 
 export interface UpdateTaskStatusPayload {

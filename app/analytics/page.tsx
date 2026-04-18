@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
-import { format, subYears } from "date-fns";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { format, subYears, getISOWeek } from "date-fns";
 import {
   TrendingUp,
   TrendingDown,
@@ -34,11 +34,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useTaskStore } from "@/lib/store";
-import { priorityConfig, isHoliday } from "@/lib/types";
+import { isHoliday } from "@/lib/types";
 import type { HolidaySettings } from "@/lib/types";
 import { employeesApi, type Employee } from "@/lib/api/employees";
 import { tasksApi, type CalendarTaskRow } from "@/lib/api/tasks";
+import { analyticsApi, type PerformanceSummary, type VelocityRow, type EfficiencyResult, type BottleneckRow, type TeamWorkloadRow } from "@/lib/api/analytics";
+import { performanceConfigApi, type PerformanceConfig } from "@/lib/api/performance-config";
 import { useTranslation } from "@/lib/i18n";
+import { ApiError } from "@/lib/api/client";
+import { useAuthStore } from "@/lib/auth-store";
 import {
   AreaChart,
   Area,
@@ -60,13 +64,14 @@ import {
   ComposedChart,
 } from "recharts";
 
-// Helper to get the holiday settings for a specific year
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 function getHolidaySettingsForYear(
   holidaySettings: HolidaySettings[],
-  year: number
+  year: number,
 ): HolidaySettings {
   return (
-    holidaySettings.find((hs) => hs.year === year) || {
+    holidaySettings.find((hs) => hs.year === year) ?? {
       year,
       weekendDays: [0, 6],
       specialHolidays: [],
@@ -74,57 +79,50 @@ function getHolidaySettingsForYear(
   );
 }
 
-// Helper to calculate working days in a period
 function getWorkingDaysInPeriod(
   startDate: Date,
   endDate: Date,
-  holidaySettings: HolidaySettings
+  holidaySettings: HolidaySettings,
 ): number {
   let workingDays = 0;
   const current = new Date(startDate);
-
   while (current <= endDate) {
-    if (!isHoliday(current, holidaySettings)) {
-      workingDays++;
-    }
+    if (!isHoliday(current, holidaySettings)) workingDays++;
     current.setDate(current.getDate() + 1);
   }
-
   return workingDays;
 }
 
-// Helper to get date range based on period
 function getDateRange(
   period: "week" | "month" | "quarter" | "year",
-  referenceDate: Date = new Date()
+  referenceDate: Date = new Date(),
 ): { start: Date; end: Date } {
   const start = new Date(referenceDate);
   const end = new Date(referenceDate);
-
   switch (period) {
-    case "week":
-      // Start of week (Monday)
+    case "week": {
       const dayOfWeek = start.getDay();
       const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
       start.setDate(start.getDate() + diff);
       start.setHours(0, 0, 0, 0);
-      // End of week (Sunday)
       end.setDate(start.getDate() + 6);
       end.setHours(23, 59, 59, 999);
       break;
+    }
     case "month":
       start.setDate(1);
       start.setHours(0, 0, 0, 0);
       end.setMonth(end.getMonth() + 1, 0);
       end.setHours(23, 59, 59, 999);
       break;
-    case "quarter":
+    case "quarter": {
       const quarter = Math.floor(start.getMonth() / 3);
       start.setMonth(quarter * 3, 1);
       start.setHours(0, 0, 0, 0);
       end.setMonth(quarter * 3 + 3, 0);
       end.setHours(23, 59, 59, 999);
       break;
+    }
     case "year":
       start.setMonth(0, 1);
       start.setHours(0, 0, 0, 0);
@@ -132,11 +130,11 @@ function getDateRange(
       end.setHours(23, 59, 59, 999);
       break;
   }
-
   return { start, end };
 }
 
-// Performance Gauge Component
+// ─── Performance Gauge ────────────────────────────────────────────────────────
+
 function PerformanceGauge({ value, label }: { value: number; label: string }) {
   const getColor = (val: number) => {
     if (val >= 100) return "#10b981";
@@ -144,9 +142,7 @@ function PerformanceGauge({ value, label }: { value: number; label: string }) {
     if (val >= 60) return "#f59e0b";
     return "#ef4444";
   };
-
   const data = [{ name: label, value, fill: getColor(value) }];
-
   return (
     <div className="flex flex-col items-center">
       <div className="h-[120px] w-[120px]">
@@ -177,7 +173,6 @@ function PerformanceGauge({ value, label }: { value: number; label: string }) {
   );
 }
 
-// Standard 5 statuses used in analytics (mirrors job-status master)
 const STANDARD_STATUSES = [
   { id: "open",        name: "Open",        color: "#6b7280" },
   { id: "in_progress", name: "In Progress", color: "#3b82f6" },
@@ -186,69 +181,138 @@ const STANDARD_STATUSES = [
   { id: "closed",      name: "Closed",      color: "#6366f1" },
 ];
 
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
 export default function AnalyticsPage() {
   const { holidaySettings, taskTypes } = useTaskStore();
   const { t, language } = useTranslation();
 
-  const [employees,      setEmployees]      = useState<Employee[]>([]);
-  const [apiTasks,       setApiTasks]       = useState<CalendarTaskRow[]>([]);
-  const [dataLoading,    setDataLoading]    = useState(true);
+  // ── Raw data from APIs ──────────────────────────────────────────────────────
+  const [employees,       setEmployees]       = useState<Employee[]>([]);
+  const [apiTasks,        setApiTasks]        = useState<CalendarTaskRow[]>([]);
+  const [perfSummary,     setPerfSummary]     = useState<PerformanceSummary | null>(null);
+  const [perfConfig,      setPerfConfig]      = useState<PerformanceConfig | null>(null);
+  const [velocityRows,    setVelocityRows]    = useState<VelocityRow[]>([]);
+  const [efficiencyResult,setEfficiencyResult]= useState<EfficiencyResult | null>(null);
+  const [bottleneckRows,  setBottleneckRows]  = useState<BottleneckRow[]>([]);
+  const [teamWorkload,    setTeamWorkload]    = useState<TeamWorkloadRow[]>([]);
+
+  const [dataLoading, setDataLoading]   = useState(true);
+  const [tabLoading,  setTabLoading]    = useState(false);
+
+  const currentUser = useAuthStore((s) => s.user);
+  const isManagerOrAdmin = currentUser?.role === "manager" || currentUser?.role === "admin";
 
   const [selectedPeriod, setSelectedPeriod] = useState<"week" | "month" | "quarter" | "year">("week");
   const [selectedUserId, setSelectedUserId] = useState<string>("all");
   const [activeTab,      setActiveTab]      = useState("performance");
 
-  // Load employees + 1-year calendar tasks on mount
+  // ── Initial load: employees (listAll = no permission needed), calendar tasks, config ──
   useEffect(() => {
     const start = format(subYears(new Date(), 1), "yyyy-MM-dd");
     const end   = format(new Date(), "yyyy-MM-dd");
     setDataLoading(true);
+
     Promise.all([
-      employeesApi.list({ limit: 200, isActive: true }),
+      employeesApi.listAll(),                            // GET /employees/all — ทุก role เข้าถึงได้
       tasksApi.calendar(start, end),
+      performanceConfigApi.getMe().catch(() => null),    // ถ้ายังไม่มี config ไม่ error
     ])
-      .then(([empRes, calTasks]) => {
-        setEmployees(empRes.rows);
+      .then(([empRes, calTasks, config]) => {
+        // Backend returns: { success, message, data: { rows: Employee[] } }
+        const empData = empRes as unknown as { rows?: Employee[] };
+        const empList = empData?.rows || [];
+        setEmployees(empList);
         setApiTasks(calTasks);
+        setPerfConfig(config);
       })
       .catch(console.error)
       .finally(() => setDataLoading(false));
   }, []);
 
-  // Get current holiday settings
+  // ── Period-dependent load: analytics APIs re-run when period or user changes ─
+  const loadAnalytics = useCallback(async () => {
+    setTabLoading(true);
+    const dateRange = getDateRange(selectedPeriod);
+    const startStr  = format(dateRange.start, "yyyy-MM-dd");
+    const endStr    = format(dateRange.end,   "yyyy-MM-dd");
+    const empParam  = selectedUserId !== "all" ? selectedUserId : undefined;
+
+    // ใช้ allSettled เพื่อให้ API ที่ fail (เช่น 403 สำหรับ employee) ไม่ทำให้ตัวอื่นพัง
+    const [summary, velocity, efficiency, bottleneck, workload] = await Promise.allSettled([
+      analyticsApi.performance({ employee_id: empParam, period: selectedPeriod, start: startStr, end: endStr }),
+      analyticsApi.velocity({ employee_id: empParam, weeks: 8 }),
+      isManagerOrAdmin ? analyticsApi.efficiency({ period: selectedPeriod, employee_id: empParam }) : Promise.resolve(null),
+      isManagerOrAdmin ? analyticsApi.bottleneck() : Promise.resolve([]),
+      isManagerOrAdmin ? analyticsApi.teamWorkload() : Promise.resolve([]),
+    ]);
+
+    if (summary.status    === "fulfilled") setPerfSummary(summary.value);
+    if (velocity.status   === "fulfilled") setVelocityRows(velocity.value);
+    if (efficiency.status === "fulfilled" && efficiency.value) setEfficiencyResult(efficiency.value);
+    if (bottleneck.status === "fulfilled") setBottleneckRows(bottleneck.value as BottleneckRow[]);
+    if (workload.status   === "fulfilled") setTeamWorkload(workload.value as TeamWorkloadRow[]);
+
+    // log errors ที่ไม่ใช่ 403
+    [summary, velocity, efficiency, bottleneck, workload].forEach((r) => {
+      if (r.status === "rejected" && !(r.reason instanceof ApiError && r.reason.status === 403)) {
+        console.error("Analytics error:", r.reason);
+      }
+    });
+
+    setTabLoading(false);
+  }, [selectedPeriod, selectedUserId, isManagerOrAdmin]);
+
+  useEffect(() => {
+    if (!dataLoading) void loadAnalytics();
+  }, [dataLoading, loadAnalytics]);
+
+  // ── Holiday settings ────────────────────────────────────────────────────────
   const currentYear = new Date().getFullYear();
   const currentHolidaySettings = getHolidaySettingsForYear(holidaySettings, currentYear);
-
-  // Calculate date range
   const dateRange = useMemo(() => getDateRange(selectedPeriod), [selectedPeriod]);
   const workingDaysInPeriod = useMemo(
     () => getWorkingDaysInPeriod(dateRange.start, dateRange.end, currentHolidaySettings),
     [dateRange, currentHolidaySettings],
   );
 
-  // Use API tasks (CalendarTaskRow)
-  const tasks = apiTasks;
-
-  // Individual Performance Metrics
+  // ── PERFORMANCE TAB: mix of calendar tasks + API summary ───────────────────
   const performanceMetrics = useMemo(() => {
     const filterTasks =
       selectedUserId === "all"
-        ? tasks
-        : tasks.filter((t) => t.assignee_id === selectedUserId);
+        ? apiTasks
+        : apiTasks.filter((t) => t.assignee_id === selectedUserId);
 
-    const assignedPoints  = filterTasks.reduce((sum, t) => sum + (t.story_points ?? 0), 0);
-    const inProgressPoints = filterTasks
+    // Filter tasks in current date range
+    const periodTasks = filterTasks.filter((t) => {
+      const d = new Date(t.created_at);
+      return d >= dateRange.start && d <= dateRange.end;
+    });
+
+    const assignedPoints   = perfSummary
+      ? Number(perfSummary.assigned_points)
+      : periodTasks.reduce((s, t) => s + (t.story_points ?? 0), 0);
+    const inProgressPoints = periodTasks
       .filter((t) => t.status === "in_progress" || t.status === "review")
-      .reduce((sum, t) => sum + (t.story_points ?? 0), 0);
-    const completedPoints = filterTasks
-      .filter((t) => t.status === "done" || t.status === "closed")
-      .reduce((sum, t) => sum + (t.story_points ?? 0), 0);
-    const backlogPoints = filterTasks
-      .filter((t) => t.status === "open")
-      .reduce((sum, t) => sum + (t.story_points ?? 0), 0);
+      .reduce((s, t) => s + (t.story_points ?? 0), 0);
+    const completedPoints  = perfSummary
+      ? Number(perfSummary.completed_points)
+      : periodTasks
+          .filter((t) => t.status === "done" || t.status === "closed" || t.status === "completed")
+          .reduce((s, t) => s + (t.story_points ?? 0), 0);
+    const backlogPoints    = periodTasks
+      .filter((t) => t.status === "open" || t.status === "pending")
+      .reduce((s, t) => s + (t.story_points ?? 0), 0);
 
-    const dailyTarget    = 8; // default 8 story-points/day
-    const targetPoints   = dailyTarget * workingDaysInPeriod;
+    // Daily target from config, fallback to 8 pts/day
+    const dailyTarget    = perfConfig?.point_target
+      ? (perfConfig.point_period === "week"
+          ? perfConfig.point_target / 5
+          : perfConfig.point_period === "month"
+          ? perfConfig.point_target / 20
+          : 8)
+      : 8;
+    const targetPoints       = Math.round(dailyTarget * workingDaysInPeriod);
     const performancePercent = targetPoints > 0 ? (completedPoints / targetPoints) * 100 : 0;
 
     return {
@@ -256,232 +320,195 @@ export default function AnalyticsPage() {
       inProgressPoints,
       completedPoints,
       backlogPoints,
-      targetPoints:     Math.round(targetPoints),
+      targetPoints,
       performancePercent,
-      dailyTarget,
-      workingDays:      workingDaysInPeriod,
+      dailyTarget:  Math.round(dailyTarget),
+      workingDays:  workingDaysInPeriod,
+      totalTasks:   perfSummary?.total_tasks    ?? periodTasks.length,
+      overdueTasks: perfSummary?.overdue_tasks  ?? 0,
+      completionRate: perfSummary?.completion_rate ?? 0,
     };
-  }, [tasks, selectedUserId, workingDaysInPeriod]);
+  }, [apiTasks, selectedUserId, dateRange, perfSummary, perfConfig, workingDaysInPeriod]);
 
-  // Velocity Analysis Data (last 6 weeks, grouped by plan_finish or created_at)
+  // ── VELOCITY TAB ──────────────────────────────────────────────────────────
   const velocityData = useMemo(() => {
-    const data = [];
-    for (let i = 5; i >= 0; i--) {
-      const date  = new Date();
-      date.setDate(date.getDate() - i * 7);
-      const range = getDateRange("week", date);
-      const weekNum = Math.ceil(
-        (date.getTime() - new Date(date.getFullYear(), 0, 1).getTime()) /
-          (7 * 24 * 60 * 60 * 1000),
-      );
+    if (velocityRows.length === 0) return [];
 
-      const periodTasks = tasks.filter((t) => {
-        // use plan_finish as proxy for completion
-        const finishDate = t.plan_finish ? new Date(t.plan_finish) : null;
-        return finishDate && finishDate >= range.start && finishDate <= range.end &&
-          (t.status === "done" || t.status === "closed");
-      });
-
-      const completed = periodTasks.reduce((sum, t) => sum + (t.story_points ?? 0), 0);
-      const allInWeek = tasks.filter((t) => {
-        const d = t.plan_finish ? new Date(t.plan_finish) : null;
-        return d && d >= range.start && d <= range.end;
-      });
-      const planned = allInWeek.reduce((sum, t) => sum + (t.story_points ?? 0), 0);
-
-      data.push({
-        period:     `W${weekNum}`,
-        planned:    planned || completed,
-        completed,
-        efficiency: (planned || completed) > 0
-          ? Math.round((completed / (planned || completed)) * 100)
-          : 0,
-      });
+    // Group by week_start, aggregate across employees if "all"
+    const weekMap = new Map<string, { planned: number; completed: number; ratioSum: number; count: number }>();
+    for (const row of velocityRows) {
+      if (selectedUserId !== "all" && row.employee_id !== selectedUserId) continue;
+      const existing = weekMap.get(row.week_start);
+      const ratio = row.performance_ratio ? Number(row.performance_ratio) : 0;
+      if (existing) {
+        existing.planned   += Number(row.expected_points ?? 0);
+        existing.completed += Number(row.actual_points);
+        existing.ratioSum  += ratio;
+        existing.count     += 1;
+      } else {
+        weekMap.set(row.week_start, {
+          planned:   Number(row.expected_points ?? 0),
+          completed: Number(row.actual_points),
+          ratioSum:  ratio,
+          count:     1,
+        });
+      }
     }
-    return data;
-  }, [tasks]);
 
-  // Calculate average velocity and variance
+    return Array.from(weekMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([weekStart, agg]) => {
+        const d = new Date(weekStart);
+        return {
+          period:     `W${getISOWeek(d)}`,
+          planned:    agg.planned   || agg.completed,   // fallback to completed if no target
+          completed:  agg.completed,
+          efficiency: agg.count > 0
+            ? Math.round((agg.ratioSum / agg.count) * 100)
+            : (agg.planned > 0 ? Math.round((agg.completed / agg.planned) * 100) : 0),
+        };
+      });
+  }, [velocityRows, selectedUserId]);
+
   const velocityStats = useMemo(() => {
     const completedValues = velocityData.map((d) => d.completed);
+    if (completedValues.length === 0) return { average: 0, variance: 0, stability: 0 };
     const average = completedValues.reduce((a, b) => a + b, 0) / completedValues.length;
     const variance = Math.sqrt(
-      completedValues.reduce((sum, val) => sum + Math.pow(val - average, 2), 0) / completedValues.length
+      completedValues.reduce((sum, val) => sum + Math.pow(val - average, 2), 0) /
+        completedValues.length,
     );
     const stability = average > 0 ? Math.max(0, 100 - (variance / average) * 100) : 0;
-
     return {
-      average: Math.round(average),
-      variance: Math.round(variance * 10) / 10,
+      average:   Math.round(average),
+      variance:  Math.round(variance * 10) / 10,
       stability: Math.round(stability),
     };
   }, [velocityData]);
 
-  // Efficiency Analysis - Estimate vs Actual
+  // ── EFFICIENCY TAB ─────────────────────────────────────────────────────────
   const efficiencyData = useMemo(() => {
-    const completedTasks = tasks.filter(
+    // Per-task breakdown from calendar tasks (for the bar chart)
+    const completedTasks = apiTasks.filter(
       (t) =>
-        (t.status === "done" || t.status === "closed") &&
+        (t.status === "done" || t.status === "closed" || t.status === "completed") &&
         t.time_estimate_hours &&
-        t.accumulated_minutes > 0,
+        t.accumulated_minutes > 0 &&
+        (selectedUserId === "all" || t.assignee_id === selectedUserId),
     );
+    const taskChartData = completedTasks.slice(0, 10).map((task) => ({
+      name:      task.title.substring(0, 15) + "…",
+      estimated: Math.round((task.time_estimate_hours ?? 0)),
+      actual:    Math.round(task.accumulated_minutes / 60),
+      accuracy:  (task.time_estimate_hours ?? 0) > 0
+        ? Math.round((task.accumulated_minutes / 60 / (task.time_estimate_hours ?? 1)) * 100)
+        : 0,
+    }));
 
-    const data = completedTasks.slice(0, 10).map((task) => {
-      const estMins = (task.time_estimate_hours ?? 0) * 60;
-      const actMins = task.accumulated_minutes;
-      return {
-        name:      task.title.substring(0, 15) + "…",
-        estimated: Math.round(estMins / 60),
-        actual:    Math.round(actMins / 60),
-        accuracy:  estMins > 0 ? Math.round((actMins / estMins) * 100) : 0,
-      };
-    });
+    // Per-employee point density from API efficiency result
+    const effRows = efficiencyResult?.data ?? [];
+    const pointDensity = effRows
+      .filter((r) => selectedUserId === "all" || r.employee_id === selectedUserId)
+      .map((r) => ({
+        user:               r.employee_name,
+        avgMinutesPerPoint: r.avg_actual_hours > 0
+          ? Math.round((r.avg_actual_hours * 60) / Math.max(1, r.total_tasks))
+          : 0,
+        taskCount:          r.total_tasks,
+      }));
 
-    // Point density per user
-    const pointDensity: { user: string; avgMinutesPerPoint: number; taskCount: number }[] = [];
-    if (Array.isArray(employees)) {
-      for (const emp of employees) {
-        const userTasks = completedTasks.filter((t) => t.assignee_id === emp.id);
-        const totalMinutes = userTasks.reduce((sum, t) => sum + t.accumulated_minutes, 0);
-        const totalPoints  = userTasks.reduce((sum, t) => sum + (t.story_points ?? 0), 0);
-        if (totalPoints > 0) {
-          pointDensity.push({
-            user:               emp.name,
-            avgMinutesPerPoint: Math.round(totalMinutes / totalPoints),
-            taskCount:          userTasks.length,
-          });
-        }
-      }
-    }
+    const avgAccuracy = effRows.length > 0
+      ? Math.round(
+          effRows
+            .filter((r) => r.accuracy_pct != null)
+            .reduce((s, r) => s + Number(r.accuracy_pct ?? 0), 0) /
+            Math.max(1, effRows.filter((r) => r.accuracy_pct != null).length),
+        )
+      : (taskChartData.length > 0
+          ? Math.round(taskChartData.reduce((s, d) => s + d.accuracy, 0) / taskChartData.length)
+          : 0);
 
-    const avgAccuracy =
-      data.length > 0
-        ? Math.round(data.reduce((sum, d) => sum + d.accuracy, 0) / data.length)
-        : 0;
+    return { tasks: taskChartData, pointDensity, avgAccuracy };
+  }, [apiTasks, efficiencyResult, selectedUserId]);
 
-    return { tasks: data, pointDensity, avgAccuracy };
-  }, [tasks, employees]);
-
-  // Bottleneck Analysis - Status Aging
+  // ── BOTTLENECK TAB ─────────────────────────────────────────────────────────
   const bottleneckData = useMemo(() => {
-    // Use standard 5 statuses for status aging
-    const statusAging = STANDARD_STATUSES.map((status) => {
-      const tasksInStatus = tasks.filter((t) => t.status === status.id);
-      const avgDays =
-        tasksInStatus.length > 0
-          ? Math.round(
-              tasksInStatus.reduce((sum, t) => {
-                const created = new Date(t.created_at);
-                return (
-                  sum +
-                  Math.floor(
-                    (Date.now() - created.getTime()) / (1000 * 60 * 60 * 24),
-                  )
-                );
-              }, 0) / tasksInStatus.length,
-            )
-          : 0;
+    // Status aging from API
+    const statusAging =
+      bottleneckRows.length > 0
+        ? bottleneckRows.map((row) => ({
+            status:       row.status_name,
+            color:        row.color ?? "#6b7280",
+            taskCount:    Number(row.task_count),
+            avgDays:      Number(row.avg_days_stuck),
+            isBottleneck: Number(row.avg_days_stuck) > 5 && Number(row.task_count) > 3,
+          }))
+        : STANDARD_STATUSES.map((s) => ({ // fallback while loading
+            status: s.name, color: s.color, taskCount: 0, avgDays: 0, isBottleneck: false,
+          }));
 
-      return {
-        status:      status.name,
-        color:       status.color,
-        taskCount:   tasksInStatus.length,
-        avgDays,
-        isBottleneck: avgDays > 5 && tasksInStatus.length > 3,
-      };
-    });
-
-    // Workload balance from real employees
-    const workloadBalance = (Array.isArray(employees) ? employees : [])
-      .map((emp) => {
-        const userTasks   = tasks.filter((t) => t.assignee_id === emp.id);
-        const activePoints = userTasks
-          .filter((t) => t.status !== "done" && t.status !== "closed")
-          .reduce((sum, t) => sum + (t.story_points ?? 0), 0);
-        return {
-          user:      emp.name,
-          avatar:    emp.avatarUrl,
-          points:    activePoints,
-          taskCount: userTasks.length,
-        };
-      })
-      .sort((a, b) => b.points - a.points);
-
+    // Workload balance from team workload API
+    const workloadRows = teamWorkload.filter(
+      (r) => selectedUserId === "all" || r.id === selectedUserId,
+    );
     const avgPoints =
-      workloadBalance.length > 0
-        ? workloadBalance.reduce((sum, w) => sum + w.points, 0) / workloadBalance.length
+      workloadRows.length > 0
+        ? workloadRows.reduce((s, r) => s + Number(r.active_points), 0) / workloadRows.length
         : 0;
 
-    return {
-      statusAging,
-      workloadBalance: workloadBalance.map((w) => ({
-        ...w,
-        isOverloaded:  w.points > avgPoints * 1.5,
-        isUnderloaded: w.points < avgPoints * 0.5,
-      })),
-    };
-  }, [tasks, employees]);
+    const workloadBalance = workloadRows.map((r) => ({
+      user:         r.name,
+      avatar:       r.avatar_url,
+      points:       Number(r.active_points),
+      taskCount:    Number(r.active_tasks),
+      isOverloaded:  Number(r.active_points) > avgPoints * 1.5,
+      isUnderloaded: Number(r.active_points) < avgPoints * 0.5,
+    }));
 
-  // Quality Score — based on real completed tasks per employee
+    return { statusAging, workloadBalance };
+  }, [bottleneckRows, teamWorkload, selectedUserId]);
+
+  // ── QUALITY TAB ────────────────────────────────────────────────────────────
   const qualityData = useMemo(() => {
-    const completedTasks = tasks.filter(
-      (t) => t.status === "done" || t.status === "closed",
-    );
+    const effRows = efficiencyResult?.data ?? [];
+    const totalCompleted = Number(perfSummary?.completed_tasks ?? 0);
 
-    // Quality by user: score = min(100, completedTasks count * 10) — proxy metric
-    const qualityByUser = (Array.isArray(employees) ? employees : [])
-      .map((emp) => {
-        const userCompleted = completedTasks.filter((t) => t.assignee_id === emp.id);
-        // Use time accuracy as quality proxy when data is available
-        const tasksWithTime = userCompleted.filter(
-          (t) => t.time_estimate_hours && t.accumulated_minutes > 0,
-        );
+    const qualityByUser = effRows
+      .filter((r) => selectedUserId === "all" || r.employee_id === selectedUserId)
+      .map((r) => {
+        // Quality score: 100% if accuracy_pct is 80-120%, penalise outliers
+        const acc = r.accuracy_pct != null ? Number(r.accuracy_pct) : null;
         let qualityScore = 100;
-        if (tasksWithTime.length > 0) {
-          const avgAccuracy =
-            tasksWithTime.reduce((sum, t) => {
-              const estMins = (t.time_estimate_hours ?? 0) * 60;
-              const ratio = estMins > 0 ? t.accumulated_minutes / estMins : 1;
-              // score penalised if task took > 150% of estimate
-              return sum + (ratio <= 1.5 ? 100 : Math.max(0, 100 - (ratio - 1.5) * 50));
-            }, 0) / tasksWithTime.length;
-          qualityScore = Math.round(avgAccuracy);
+        if (acc != null) {
+          if (acc > 150) qualityScore = Math.max(0, 100 - (acc - 150));
+          else if (acc < 50) qualityScore = Math.max(0, acc);
+          else qualityScore = Math.round(100 - Math.abs(100 - acc) * 0.5);
         }
         return {
-          user:           emp.name,
-          avatar:         emp.avatarUrl,
-          completedTasks: userCompleted.length,
+          user:           r.employee_name,
+          avatar:         r.avatar_url,
+          completedTasks: r.total_tasks,
           reworkRate:     0,
           qualityScore,
         };
       })
       .sort((a, b) => b.qualityScore - a.qualityScore);
 
-    return {
-      totalCompleted: completedTasks.length,
-      reworkCount:    0,
-      reworkRate:     0,
-      qualityByUser,
-    };
-  }, [tasks, employees]);
+    return { totalCompleted, reworkCount: 0, reworkRate: 0, qualityByUser };
+  }, [efficiencyResult, perfSummary, selectedUserId]);
 
-  // Tasks by task type — CalendarTaskRow doesn't include task_type_id,
-  // so show only the store task-types with task counts from local store tasks
+  // ── TASK TYPE ANALYSIS ─────────────────────────────────────────────────────
   const taskTypeAnalysis = useMemo(() => {
     return taskTypes.map((tt) => ({
-      name:           tt.name,
-      color:          tt.color,
-      taskCount:      0, // no task_type_id in CalendarTaskRow
-      points:         0,
+      name:            tt.name,
+      color:           tt.color,
+      taskCount:       0,
+      points:          0,
       countsForPoints: tt.countsForPoints,
     }));
   }, [taskTypes]);
 
-  const formatTime = (minutes: number) => {
-    const hours = Math.floor(minutes / 60);
-    return `${hours}h`;
-  };
-
+  // ── Loading state ──────────────────────────────────────────────────────────
   if (dataLoading) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
@@ -490,6 +517,7 @@ export default function AnalyticsPage() {
     );
   }
 
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-6 p-6">
       {/* Header */}
@@ -505,6 +533,11 @@ export default function AnalyticsPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
+          {tabLoading && (
+            <p className="self-center text-sm text-muted-foreground animate-pulse">
+              {language === "th" ? "กำลังโหลด…" : "Refreshing…"}
+            </p>
+          )}
           <Select value={selectedUserId} onValueChange={setSelectedUserId}>
             <SelectTrigger className="w-[180px]">
               <Users className="mr-2 h-4 w-4" />
@@ -514,37 +547,32 @@ export default function AnalyticsPage() {
               <SelectItem value="all">
                 {language === "th" ? "ทั้งทีม" : "All Team"}
               </SelectItem>
-              {(Array.isArray(employees) ? employees : []).map((emp) => (
+              {(employees || []).map((emp) => (
                 <SelectItem key={emp.id} value={emp.id}>
                   {emp.name}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-          <Select value={selectedPeriod} onValueChange={(v) => setSelectedPeriod(v as typeof selectedPeriod)}>
+          <Select
+            value={selectedPeriod}
+            onValueChange={(v) => setSelectedPeriod(v as typeof selectedPeriod)}
+          >
             <SelectTrigger className="w-[150px]">
               <Calendar className="mr-2 h-4 w-4" />
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="week">
-                {language === "th" ? "รายสัปดาห์" : "Weekly"}
-              </SelectItem>
-              <SelectItem value="month">
-                {language === "th" ? "รายเดือน" : "Monthly"}
-              </SelectItem>
-              <SelectItem value="quarter">
-                {language === "th" ? "รายไตรมาส" : "Quarterly"}
-              </SelectItem>
-              <SelectItem value="year">
-                {language === "th" ? "รายปี" : "Yearly"}
-              </SelectItem>
+              <SelectItem value="week">{language === "th" ? "รายสัปดาห์" : "Weekly"}</SelectItem>
+              <SelectItem value="month">{language === "th" ? "รายเดือน" : "Monthly"}</SelectItem>
+              <SelectItem value="quarter">{language === "th" ? "รายไตรมาส" : "Quarterly"}</SelectItem>
+              <SelectItem value="year">{language === "th" ? "รายปี" : "Yearly"}</SelectItem>
             </SelectContent>
           </Select>
         </div>
       </div>
 
-      {/* Tab Navigation */}
+      {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="grid w-full grid-cols-5 lg:w-auto lg:inline-flex">
           <TabsTrigger value="performance" className="gap-2">
@@ -579,14 +607,13 @@ export default function AnalyticsPage() {
           </TabsTrigger>
         </TabsList>
 
-        {/* Performance Tab */}
+        {/* ── Performance Tab ─────────────────────────────────────────────── */}
         <TabsContent value="performance" className="space-y-6">
-          {/* Point Status Cards */}
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
             <Card>
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {language === "th" ? "Assigned Points" : "Assigned Points"}
+                  Assigned Points
                 </CardTitle>
                 <BarChart3 className="h-4 w-4 text-blue-500" />
               </CardHeader>
@@ -601,7 +628,7 @@ export default function AnalyticsPage() {
             <Card>
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {language === "th" ? "In-Progress Points" : "In-Progress Points"}
+                  In-Progress Points
                 </CardTitle>
                 <Activity className="h-4 w-4 text-amber-500" />
               </CardHeader>
@@ -618,7 +645,7 @@ export default function AnalyticsPage() {
             <Card>
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {language === "th" ? "Completed Points" : "Completed Points"}
+                  Completed Points
                 </CardTitle>
                 <CheckCircle2 className="h-4 w-4 text-green-500" />
               </CardHeader>
@@ -628,6 +655,11 @@ export default function AnalyticsPage() {
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {language === "th" ? "แต้มของงานที่เสร็จแล้ว" : "Points completed"}
+                  {perfSummary && (
+                    <span className="ml-1 text-green-600">
+                      ({Math.round(Number(perfSummary.completion_rate))}% rate)
+                    </span>
+                  )}
                 </p>
               </CardContent>
             </Card>
@@ -635,7 +667,7 @@ export default function AnalyticsPage() {
             <Card>
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {language === "th" ? "Backlog Points" : "Backlog Points"}
+                  Backlog Points
                 </CardTitle>
                 <Clock className="h-4 w-4 text-gray-500" />
               </CardHeader>
@@ -645,6 +677,11 @@ export default function AnalyticsPage() {
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {language === "th" ? "แต้มของงานที่ยังไม่เริ่ม" : "Points not started"}
+                  {perfSummary && Number(perfSummary.overdue_tasks) > 0 && (
+                    <span className="ml-1 text-red-500">
+                      ({perfSummary.overdue_tasks} overdue)
+                    </span>
+                  )}
                 </p>
               </CardContent>
             </Card>
@@ -654,13 +691,9 @@ export default function AnalyticsPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <Card>
               <CardHeader>
-                <CardTitle>
-                  {language === "th" ? "Performance %" : "Performance %"}
-                </CardTitle>
+                <CardTitle>Performance %</CardTitle>
                 <CardDescription>
-                  {language === "th"
-                    ? "(Completed Points / Target Points) × 100"
-                    : "(Completed Points / Target Points) × 100"}
+                  (Completed Points / Target Points) × 100
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -706,6 +739,11 @@ export default function AnalyticsPage() {
                   {language === "th"
                     ? "คำนวณจากวันทำงานจริง (หักวันหยุด)"
                     : "Calculated from actual working days (minus holidays)"}
+                  {perfConfig && (
+                    <span className="ml-1 text-xs">
+                      — config: {perfConfig.point_target} pts/{perfConfig.point_period}
+                    </span>
+                  )}
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -723,7 +761,9 @@ export default function AnalyticsPage() {
                     </p>
                     <p className="text-2xl font-bold">{performanceMetrics.workingDays}</p>
                     <p className="text-xs text-muted-foreground">
-                      {language === "th" ? `ใน${selectedPeriod === "week" ? "สัปดาห์" : selectedPeriod === "month" ? "เดือน" : selectedPeriod === "quarter" ? "ไตรมาส" : "ปี"}นี้` : `in this ${selectedPeriod}`}
+                      {language === "th"
+                        ? `ใน${selectedPeriod === "week" ? "สัปดาห์" : selectedPeriod === "month" ? "เดือน" : selectedPeriod === "quarter" ? "ไตรมาส" : "ปี"}นี้`
+                        : `in this ${selectedPeriod}`}
                     </p>
                   </div>
                 </div>
@@ -732,7 +772,8 @@ export default function AnalyticsPage() {
                     {language === "th" ? "สูตรการคำนวณ" : "Formula"}
                   </p>
                   <code className="text-xs bg-background px-2 py-1 rounded">
-                    Target = Daily Target × Working Days = {performanceMetrics.dailyTarget} × {performanceMetrics.workingDays} = {performanceMetrics.targetPoints} pts
+                    Target = Daily Target × Working Days = {performanceMetrics.dailyTarget} ×{" "}
+                    {performanceMetrics.workingDays} = {performanceMetrics.targetPoints} pts
                   </code>
                 </div>
               </CardContent>
@@ -765,9 +806,7 @@ export default function AnalyticsPage() {
                       />
                       <div>
                         <p className="font-medium">{tt.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {tt.taskCount} tasks
-                        </p>
+                        <p className="text-xs text-muted-foreground">{tt.taskCount} tasks</p>
                       </div>
                     </div>
                     <div className="text-right">
@@ -785,7 +824,7 @@ export default function AnalyticsPage() {
           </Card>
         </TabsContent>
 
-        {/* Velocity Tab */}
+        {/* ── Velocity Tab ──────────────────────────────────────────────────── */}
         <TabsContent value="velocity" className="space-y-6">
           <div className="grid gap-4 md:grid-cols-3">
             <Card>
@@ -834,65 +873,71 @@ export default function AnalyticsPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>
-                {language === "th" ? "Velocity Trend" : "Velocity Trend"}
-              </CardTitle>
+              <CardTitle>{language === "th" ? "Velocity Trend" : "Velocity Trend"}</CardTitle>
               <CardDescription>
                 {language === "th"
-                  ? "เปรียบเทียบ Points ที่วางแผนและทำเสร็จในแต่ละสัปดาห์"
-                  : "Comparing planned vs completed points per week"}
+                  ? "เปรียบเทียบ Points ที่วางแผนและทำเสร็จในแต่ละสัปดาห์ (8 สัปดาห์ล่าสุด)"
+                  : "Comparing planned vs completed points per week (last 8 weeks)"}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={velocityData}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis dataKey="period" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 12 }} />
-                    <Tooltip
-                      content={({ active, payload, label }) => {
-                        if (active && payload && payload.length) {
-                          return (
-                            <div className="rounded-lg border bg-background p-3 shadow-sm">
-                              <p className="mb-2 font-medium">{label}</p>
-                              {payload.map((entry, index) => (
-                                <div key={index} className="flex items-center gap-2 text-sm">
-                                  <div
-                                    className="h-2 w-2 rounded-full"
-                                    style={{ backgroundColor: entry.color }}
-                                  />
-                                  <span className="text-muted-foreground">{entry.name}:</span>
-                                  <span className="font-medium">
-                                    {entry.value} {entry.name === "Efficiency" ? "%" : "SP"}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          );
-                        }
-                        return null;
-                      }}
-                    />
-                    <Legend />
-                    <Bar dataKey="planned" name="Planned" fill="#6b7280" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="completed" name="Completed" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                    <Line
-                      type="monotone"
-                      dataKey="efficiency"
-                      name="Efficiency"
-                      stroke="#10b981"
-                      strokeWidth={2}
-                      dot={{ fill: "#10b981" }}
-                    />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
+              {velocityData.length === 0 ? (
+                <div className="flex h-[300px] items-center justify-center text-muted-foreground">
+                  {language === "th"
+                    ? "ยังไม่มีข้อมูล weekly reports — ลอง generate ก่อน"
+                    : "No weekly report data — try generating reports first"}
+                </div>
+              ) : (
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={velocityData}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis dataKey="period" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 12 }} />
+                      <Tooltip
+                        content={({ active, payload, label }) => {
+                          if (active && payload && payload.length) {
+                            return (
+                              <div className="rounded-lg border bg-background p-3 shadow-sm">
+                                <p className="mb-2 font-medium">{label}</p>
+                                {payload.map((entry, index) => (
+                                  <div key={index} className="flex items-center gap-2 text-sm">
+                                    <div
+                                      className="h-2 w-2 rounded-full"
+                                      style={{ backgroundColor: entry.color }}
+                                    />
+                                    <span className="text-muted-foreground">{entry.name}:</span>
+                                    <span className="font-medium">
+                                      {entry.value}{entry.name === "Efficiency" ? "%" : " SP"}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          }
+                          return null;
+                        }}
+                      />
+                      <Legend />
+                      <Bar dataKey="planned"   name="Planned"    fill="#6b7280" radius={[4,4,0,0]} />
+                      <Bar dataKey="completed" name="Completed"  fill="#3b82f6" radius={[4,4,0,0]} />
+                      <Line
+                        type="monotone"
+                        dataKey="efficiency"
+                        name="Efficiency"
+                        stroke="#10b981"
+                        strokeWidth={2}
+                        dot={{ fill: "#10b981" }}
+                      />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* Efficiency Tab */}
+        {/* ── Efficiency Tab ────────────────────────────────────────────────── */}
         <TabsContent value="efficiency" className="space-y-6">
           <Card>
             <CardHeader>
@@ -909,194 +954,209 @@ export default function AnalyticsPage() {
               <div className="mb-4 flex items-center gap-4">
                 <Badge variant="outline" className="gap-2">
                   <div className="h-2 w-2 rounded-full bg-blue-500" />
-                  {language === "th" ? "ค่าเฉลี่ยความแม่นยำ" : "Avg Accuracy"}: {efficiencyData.avgAccuracy}%
+                  {language === "th" ? "ค่าเฉลี่ยความแม่นยำ" : "Avg Accuracy"}:{" "}
+                  {efficiencyData.avgAccuracy}%
                 </Badge>
               </div>
-              <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={efficiencyData.tasks} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis type="number" tick={{ fontSize: 12 }} />
-                    <YAxis dataKey="name" type="category" tick={{ fontSize: 10 }} width={100} />
-                    <Tooltip
-                      content={({ active, payload }) => {
-                        if (active && payload && payload.length) {
-                          return (
-                            <div className="rounded-lg border bg-background p-3 shadow-sm">
-                              {payload.map((entry, index) => (
-                                <div key={index} className="flex items-center gap-2 text-sm">
-                                  <span className="text-muted-foreground">{entry.name}:</span>
-                                  <span className="font-medium">{entry.value}h</span>
-                                </div>
-                              ))}
-                            </div>
-                          );
-                        }
-                        return null;
-                      }}
-                    />
-                    <Legend />
-                    <Bar dataKey="estimated" name="Estimated" fill="#6b7280" radius={[0, 4, 4, 0]} />
-                    <Bar dataKey="actual" name="Actual" fill="#3b82f6" radius={[0, 4, 4, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              {efficiencyData.tasks.length === 0 ? (
+                <div className="flex h-[300px] items-center justify-center text-muted-foreground">
+                  {language === "th" ? "ยังไม่มีข้อมูล" : "No data for this period"}
+                </div>
+              ) : (
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={efficiencyData.tasks} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis type="number" tick={{ fontSize: 12 }} />
+                      <YAxis dataKey="name" type="category" tick={{ fontSize: 10 }} width={100} />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (active && payload && payload.length) {
+                            return (
+                              <div className="rounded-lg border bg-background p-3 shadow-sm">
+                                {payload.map((entry, index) => (
+                                  <div key={index} className="flex items-center gap-2 text-sm">
+                                    <span className="text-muted-foreground">{entry.name}:</span>
+                                    <span className="font-medium">{entry.value}h</span>
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          }
+                          return null;
+                        }}
+                      />
+                      <Legend />
+                      <Bar dataKey="estimated" name="Estimated" fill="#6b7280" radius={[0,4,4,0]} />
+                      <Bar dataKey="actual"    name="Actual"    fill="#3b82f6" radius={[0,4,4,0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>
-                {language === "th" ? "Point Density" : "Point Density"}
-              </CardTitle>
+              <CardTitle>{language === "th" ? "Point Density" : "Point Density"}</CardTitle>
               <CardDescription>
                 {language === "th"
-                  ? "เวลาเฉลี่ยที่ใช้ต่อ 1 Story Point ของแต่ละคน"
-                  : "Average minutes spent per story point by user"}
+                  ? "เวลาเฉลี่ยที่ใช้ต่อ 1 Task ของแต่ละคน (จาก API)"
+                  : "Average minutes spent per task by user (from API)"}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                {efficiencyData.pointDensity.map((pd) => (
-                  <div key={pd.user} className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <Avatar className="h-8 w-8">
-                        <AvatarFallback>{pd.user.substring(0, 2)}</AvatarFallback>
-                      </Avatar>
-                      <div>
-                        <p className="font-medium">{pd.user}</p>
+              {efficiencyData.pointDensity.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {language === "th" ? "ยังไม่มีข้อมูล" : "No data available"}
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {efficiencyData.pointDensity.map((pd) => (
+                    <div key={pd.user} className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <Avatar className="h-8 w-8">
+                          <AvatarFallback>{pd.user.substring(0, 2)}</AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <p className="font-medium">{pd.user}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {pd.taskCount} tasks completed
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-bold">{pd.avgMinutesPerPoint} min/task</p>
                         <p className="text-xs text-muted-foreground">
-                          {pd.taskCount} tasks completed
+                          ({Math.round((pd.avgMinutesPerPoint / 60) * 10) / 10} hr/task)
                         </p>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <p className="font-bold">{pd.avgMinutesPerPoint} min/pt</p>
-                      <p className="text-xs text-muted-foreground">
-                        ({Math.round(pd.avgMinutesPerPoint / 60 * 10) / 10} hr/pt)
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* Bottleneck Tab */}
+        {/* ── Bottleneck Tab ────────────────────────────────────────────────── */}
         <TabsContent value="bottleneck" className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>
-                {language === "th" ? "Status Aging" : "Status Aging"}
-              </CardTitle>
+              <CardTitle>{language === "th" ? "Status Aging" : "Status Aging"}</CardTitle>
               <CardDescription>
                 {language === "th"
-                  ? "งานค้างอยู่ที่แต่ละ Status นานเท่าไร (เฉลี่ย)"
-                  : "Average days tasks spend in each status"}
+                  ? "งานค้างอยู่ที่แต่ละ Status นานเท่าไร (เฉลี่ย จาก API)"
+                  : "Average days tasks spend in each status (from API)"}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                {bottleneckData.statusAging.map((status) => (
-                  <div key={status.status} className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div
-                          className="h-3 w-3 rounded-full"
-                          style={{ backgroundColor: status.color }}
-                        />
-                        <span className="font-medium">{status.status}</span>
-                        {status.isBottleneck && (
-                          <Badge variant="destructive" className="text-xs">
-                            <AlertTriangle className="mr-1 h-3 w-3" />
-                            {language === "th" ? "คอขวด" : "Bottleneck"}
-                          </Badge>
-                        )}
+              {bottleneckData.statusAging.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {language === "th" ? "ยังไม่มีข้อมูล" : "No active tasks found"}
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {bottleneckData.statusAging.map((status) => (
+                    <div key={status.status} className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div
+                            className="h-3 w-3 rounded-full"
+                            style={{ backgroundColor: status.color }}
+                          />
+                          <span className="font-medium">{status.status}</span>
+                          {status.isBottleneck && (
+                            <Badge variant="destructive" className="text-xs">
+                              <AlertTriangle className="mr-1 h-3 w-3" />
+                              {language === "th" ? "คอขวด" : "Bottleneck"}
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="text-right">
+                          <span className="font-bold">{status.avgDays} days</span>
+                          <span className="text-sm text-muted-foreground ml-2">
+                            ({status.taskCount} tasks)
+                          </span>
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <span className="font-bold">{status.avgDays} days</span>
-                        <span className="text-sm text-muted-foreground ml-2">
-                          ({status.taskCount} tasks)
-                        </span>
-                      </div>
+                      <Progress
+                        value={Math.min(100, status.avgDays * 10)}
+                        className={`h-2 ${status.isBottleneck ? "bg-red-100" : ""}`}
+                      />
                     </div>
-                    <Progress
-                      value={Math.min(100, status.avgDays * 10)}
-                      className={`h-2 ${status.isBottleneck ? "bg-red-100" : ""}`}
-                    />
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>
-                {language === "th" ? "Workload Balance" : "Workload Balance"}
-              </CardTitle>
+              <CardTitle>{language === "th" ? "Workload Balance" : "Workload Balance"}</CardTitle>
               <CardDescription>
                 {language === "th"
-                  ? "ดูว่าใครมีงานมากหรือน้อยเกินไป"
-                  : "Check if anyone is overloaded or underloaded"}
+                  ? "ดูว่าใครมีงานมากหรือน้อยเกินไป (จาก API)"
+                  : "Check if anyone is overloaded or underloaded (from API)"}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={bottleneckData.workloadBalance}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis dataKey="user" tick={{ fontSize: 10 }} />
-                    <YAxis tick={{ fontSize: 12 }} />
-                    <Tooltip
-                      content={({ active, payload }) => {
-                        if (active && payload && payload.length) {
-                          const data = payload[0].payload;
-                          return (
-                            <div className="rounded-lg border bg-background p-3 shadow-sm">
-                              <p className="font-medium">{data.user}</p>
-                              <p className="text-sm text-muted-foreground">
-                                {data.points} points, {data.taskCount} tasks
-                              </p>
-                              {data.isOverloaded && (
-                                <Badge variant="destructive" className="mt-1">Overloaded</Badge>
-                              )}
-                              {data.isUnderloaded && (
-                                <Badge variant="secondary" className="mt-1">Underloaded</Badge>
-                              )}
-                            </div>
-                          );
-                        }
-                        return null;
-                      }}
-                    />
-                    <Bar
-                      dataKey="points"
-                      name="Active Points"
-                      radius={[4, 4, 0, 0]}
-                    >
-                      {bottleneckData.workloadBalance.map((entry, index) => (
-                        <Cell
-                          key={`cell-${index}`}
-                          fill={
-                            entry.isOverloaded
-                              ? "#ef4444"
-                              : entry.isUnderloaded
-                              ? "#6b7280"
-                              : "#3b82f6"
+              {bottleneckData.workloadBalance.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {language === "th" ? "ยังไม่มีข้อมูล" : "No workload data available"}
+                </p>
+              ) : (
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={bottleneckData.workloadBalance}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis dataKey="user" tick={{ fontSize: 10 }} />
+                      <YAxis tick={{ fontSize: 12 }} />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (active && payload && payload.length) {
+                            const d = payload[0]?.payload;
+                            return (
+                              <div className="rounded-lg border bg-background p-3 shadow-sm">
+                                <p className="font-medium">{d.user}</p>
+                                <p className="text-sm text-muted-foreground">
+                                  {d.points} points, {d.taskCount} tasks
+                                </p>
+                                {d.isOverloaded && (
+                                  <Badge variant="destructive" className="mt-1">Overloaded</Badge>
+                                )}
+                                {d.isUnderloaded && (
+                                  <Badge variant="secondary" className="mt-1">Underloaded</Badge>
+                                )}
+                              </div>
+                            );
                           }
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+                          return null;
+                        }}
+                      />
+                      <Bar dataKey="points" name="Active Points" radius={[4,4,0,0]}>
+                        {bottleneckData.workloadBalance.map((entry, index) => (
+                          <Cell
+                            key={`cell-${index}`}
+                            fill={
+                              entry.isOverloaded
+                                ? "#ef4444"
+                                : entry.isUnderloaded
+                                ? "#6b7280"
+                                : "#3b82f6"
+                            }
+                          />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* Quality Tab */}
+        {/* ── Quality Tab ───────────────────────────────────────────────────── */}
         <TabsContent value="quality" className="space-y-6">
           <div className="grid gap-4 md:grid-cols-3">
             <Card>
@@ -1138,10 +1198,7 @@ export default function AnalyticsPage() {
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{qualityData.reworkRate}%</div>
-                <Progress
-                  value={qualityData.reworkRate}
-                  className="mt-2 h-1"
-                />
+                <Progress value={qualityData.reworkRate} className="mt-2 h-1" />
               </CardContent>
             </Card>
           </div>
@@ -1153,47 +1210,53 @@ export default function AnalyticsPage() {
               </CardTitle>
               <CardDescription>
                 {language === "th"
-                  ? "คะแนนคุณภาพ = 100 - Rework Rate"
-                  : "Quality Score = 100 - Rework Rate"}
+                  ? "คะแนนคุณภาพ = ความแม่นยำในการประมาณเวลา (จาก API)"
+                  : "Quality Score derived from time estimate accuracy (from API)"}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                {qualityData.qualityByUser.map((user) => (
-                  <div key={user.user} className="flex items-center gap-4">
-                    <Avatar className="h-10 w-10">
-                      <AvatarImage src={user.avatar ?? undefined} />
-                      <AvatarFallback>{user.user.substring(0, 2)}</AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-medium">{user.user}</span>
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold">{user.qualityScore}%</span>
-                          {user.qualityScore >= 90 ? (
-                            <ArrowUpRight className="h-4 w-4 text-green-500" />
-                          ) : user.qualityScore < 75 ? (
-                            <ArrowDownRight className="h-4 w-4 text-red-500" />
-                          ) : null}
+              {qualityData.qualityByUser.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {language === "th" ? "ยังไม่มีข้อมูล" : "No data for this period"}
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {qualityData.qualityByUser.map((user) => (
+                    <div key={user.user} className="flex items-center gap-4">
+                      <Avatar className="h-10 w-10">
+                        <AvatarImage src={user.avatar ?? undefined} />
+                        <AvatarFallback>{user.user.substring(0, 2)}</AvatarFallback>
+                      </Avatar>
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-medium">{user.user}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold">{user.qualityScore}%</span>
+                            {user.qualityScore >= 90 ? (
+                              <ArrowUpRight className="h-4 w-4 text-green-500" />
+                            ) : user.qualityScore < 75 ? (
+                              <ArrowDownRight className="h-4 w-4 text-red-500" />
+                            ) : null}
+                          </div>
                         </div>
+                        <Progress
+                          value={user.qualityScore}
+                          className={`h-2 ${
+                            user.qualityScore >= 90
+                              ? "bg-green-100"
+                              : user.qualityScore < 75
+                              ? "bg-red-100"
+                              : ""
+                          }`}
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {user.completedTasks} tasks, {user.reworkRate}% rework
+                        </p>
                       </div>
-                      <Progress
-                        value={user.qualityScore}
-                        className={`h-2 ${
-                          user.qualityScore >= 90
-                            ? "bg-green-100"
-                            : user.qualityScore < 75
-                            ? "bg-red-100"
-                            : ""
-                        }`}
-                      />
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {user.completedTasks} tasks, {user.reworkRate}% rework
-                      </p>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

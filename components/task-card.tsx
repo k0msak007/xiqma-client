@@ -102,7 +102,7 @@ export function TaskCard({ task, onClick, isSelected, variant = "board", onUpdat
     return task.assigneeIds
       .map((id) => {
         const emp = getCachedEmployee(id);
-        return emp ? { id: emp.id, name: emp.name, avatarUrl: emp.avatarUrl } : null;
+        return emp ? { id: emp.id, name: emp.name, avatarUrl: emp.avatar } : null;
       })
       .filter(Boolean) as { id: string; name: string; avatarUrl: string | null }[];
   }, [task.assigneeIds]);
@@ -234,6 +234,9 @@ export function TaskCard({ task, onClick, isSelected, variant = "board", onUpdat
         </div>
 
         {/* Title */}
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[10px] text-muted-foreground font-mono">{task.taskId}</span>
+        </div>
         <h4 className="text-sm font-medium leading-tight mb-2">{task.title}</h4>
 
         {/* Timer Display - when tracking */}
@@ -297,6 +300,22 @@ export function TaskCard({ task, onClick, isSelected, variant = "board", onUpdat
               >
                 <Calendar className="h-3 w-3" />
                 {format(new Date(task.dueDate), "MMM d")}
+              </div>
+            )}
+            
+            {/* Actual Start */}
+            {task.actualStart && (
+              <div className="flex items-center gap-1 text-[10px] text-green-600">
+                <Play className="h-3 w-3" />
+                {format(new Date(task.actualStart), "MMM d")}
+              </div>
+            )}
+            
+            {/* Actual Finish */}
+            {task.actualFinish && (
+              <div className="flex items-center gap-1 text-[10px] text-green-600">
+                <Square className="h-3 w-3" />
+                {format(new Date(task.actualFinish), "MMM d")}
               </div>
             )}
           </div>

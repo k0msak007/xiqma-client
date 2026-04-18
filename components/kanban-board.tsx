@@ -18,6 +18,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { TaskCardBoard } from "@/components/task-card-board";
 import { TaskCard } from "@/components/task-card";
 import { useListTaskStore } from "@/lib/list-task-store";
 import type { Status, Task } from "@/lib/types";
@@ -208,11 +209,11 @@ export function KanbanBoard({
                                 snapshot.isDragging && "opacity-80 shadow-lg"
                               )}
                             >
-                              <TaskCard
+                              <TaskCardBoard
                                 task={task}
                                 onClick={() => onTaskClick(task.id)}
                                 isSelected={task.id === selectedTaskId}
-                                variant="board"
+                                statuses={statuses}
                                 onUpdate={onUpdateTask}
                                 onDelete={onDeleteTask}
                               />

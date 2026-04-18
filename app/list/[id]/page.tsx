@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, use, useEffect } from "react";
+import { use, useState, useMemo, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   LayoutList,
@@ -46,7 +46,7 @@ import { KanbanBoard } from "@/components/kanban-board";
 import { AddTaskDialog } from "@/components/add-task-dialog";
 import { AddStatusDialog } from "@/components/add-status-dialog";
 import { TaskTableRow } from "@/components/task-table-row";
-import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { useTaskStore } from "@/lib/store";
 import { useListTaskStore } from "@/lib/list-task-store";
 import { useWorkspaceStore } from "@/lib/workspace-store";
@@ -226,8 +226,49 @@ export default function ListPage({ params }: PageProps) {
 
   const hasActiveFilters = filterStatus !== "all" || filterPriority !== "all" || filterAssignee !== "all" || planStartFrom || planStartTo;
 
-  // Handle task updates - call API and update local store
-  const handleTaskUpdate = async (taskId: string, updates: Partial<Task>) => {
+  // Handle sheet open - fetch fresh detail from API when opening
+  const handleSheetOpen = async (open: boolean) => {
+    if (!open) {
+      setActiveTask(undefined);
+      return;
+    }
+    const taskId = selectedTaskId || navigation.activeTaskId;
+    if (!taskId) return;
+    
+    try {
+      // Fetch fresh detail from API
+      const detail = await tasksApi.get(taskId);
+      // Find existing task to preserve local-only fields
+      const existing = tasks.find((t) => t.id === taskId);
+      const raw = detail as unknown as { started_at?: string; completed_at?: string };
+      
+      // Merge API data with existing task (preserve subtasks, comments, attachments from store)
+      const freshTask: Task = {
+        ...existing!,
+        actualStart: raw.started_at ? new Date(raw.started_at) : existing?.actualStart,
+        actualFinish: raw.completed_at ? new Date(raw.completed_at) : existing?.actualFinish,
+        dueDate: detail.deadline ? new Date(detail.deadline) : existing?.dueDate,
+        planStart: detail.planStart ? new Date(detail.planStart) : existing?.planStart,
+        duration: detail.durationDays ? Number(detail.durationDays) : existing?.duration,
+        timeSpent: detail.accumulatedMinutes ? Number(detail.accumulatedMinutes) : existing?.timeSpent,
+        estimateProgress: detail.estimateProgress != null ? Number(detail.estimateProgress) : existing?.estimateProgress,
+        updatedAt: new Date(detail.updatedAt),
+        completedAt: raw.completed_at ? new Date(raw.completed_at) : existing?.completedAt,
+      };
+      setActiveTask(freshTask.id);
+    } catch (err) {
+      console.error("Failed to fetch task detail:", err);
+      setActiveTask(taskId);
+    }
+  };
+
+  // Handle task update from TaskDetail component
+  const onTaskChange = (updated: Task) => {
+    setActiveTask(updated.id);
+  };
+
+// Handle task updates - call API and update local store
+  const handleApiUpdate = async (taskId: string, updates: Partial<Task>) => {
     try {
       // Build API payload from Task type (camelCase to match backend schema)
       const payload: any = {};
@@ -242,7 +283,7 @@ export default function ListPage({ params }: PageProps) {
       if (updates.timeSpent !== undefined) payload.accumulatedMinutes = updates.timeSpent;
       if (updates.taskTypeId !== undefined) payload.taskTypeId = updates.taskTypeId || null;
       if (updates.estimateProgress !== undefined) payload.estimateProgress = updates.estimateProgress;
-      if (updates.assigneeId !== undefined) payload.assigneeId = updates.assigneeId || null;
+      if (updates.assigneeIds !== undefined) payload.assigneeId = updates.assigneeIds[0] || null;
       
       await tasksApi.update(taskId, payload);
       
@@ -508,7 +549,7 @@ export default function ListPage({ params }: PageProps) {
                 setShowAddTaskDialog(true);
               }}
               onAddStatus={() => setShowAddStatusDialog(true)}
-              onUpdateTask={handleTaskUpdate}
+              onUpdateTask={handleApiUpdate}
               onDeleteTask={handleTaskDelete}
             />
           ) : (
@@ -556,7 +597,7 @@ export default function ListPage({ params }: PageProps) {
                                 onClick={() => setActiveTask(task.id)}
                                 isSelected={task.id === selectedTaskId}
                                 statuses={statuses}
-                                onUpdate={handleTaskUpdate}
+                                onUpdate={handleApiUpdate}
                                 onDelete={handleTaskDelete}
                               />
                             ))}
@@ -580,20 +621,21 @@ export default function ListPage({ params }: PageProps) {
         </div>
       </div>
 
-      {/* Task Detail Panel - Drawer from right */}
-      <Sheet open={!!selectedTask} onOpenChange={(open) => !open && setActiveTask(undefined)}>
-        <SheetContent className="w-[400px] p-0">
-          {selectedTask && (
-            <TaskDetail
-              task={selectedTask}
-              onClose={() => setActiveTask(undefined)}
-              onTaskChange={(updated) => {
-                setActiveTask(updated);
-              }}
-            />
-          )}
-        </SheetContent>
-      </Sheet>
+{/* Task Detail Panel - Drawer from right */}
+      <Sheet open={!!selectedTask} onOpenChange={handleSheetOpen}>
+          <SheetContent className="w-[400px] p-0">
+            <SheetTitle className="sr-only">Task Details</SheetTitle>
+            {selectedTask && (
+              <TaskDetail
+                key={selectedTask.id}
+                task={selectedTask}
+                onClose={() => setActiveTask(undefined)}
+                onTaskChange={onTaskChange}
+                readOnly={true}
+              />
+            )}
+          </SheetContent>
+        </Sheet>
 
       {/* Add Task Dialog */}
       <AddTaskDialog

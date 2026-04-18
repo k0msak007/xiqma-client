@@ -14,9 +14,9 @@ import { cacheEmployee } from "@/lib/employee-cache";
 
 function adaptListStatus(s: ListStatus): Status {
   const typeToPointCount: Record<string, StatusPointCountType> = {
-    done: "complete", closed: "complete",
+    completed: "complete", closed: "complete",
     in_progress: "in_progress", review: "in_progress",
-    open: "not_counted",
+    pending: "not_counted", paused: "not_counted", blocked: "not_counted", overdue: "not_counted", open: "not_counted",
   };
   return {
     id:             s.id,
@@ -83,6 +83,12 @@ function adaptApiDetail(row: ApiTaskDetail): Task {
   }
   const storyPoints = row.storyPoints && [1,2,3,5,8,13,21].includes(Number(row.storyPoints))
     ? (Number(row.storyPoints) as StoryPoints) : undefined;
+  
+  // Handle both camelCase (from type) and snake_case (from backend direct access)
+  const startedAt = (row as unknown as { started_at?: string }).started_at || row.startedAt;
+  const completedAt = (row as unknown as { completed_at?: string }).completed_at || row.completedAt;
+  const deadline = (row as unknown as { deadline?: string }).deadline || row.deadline;
+  
   return {
     id:           row.id,
     taskId:       row.displayId || "",
@@ -94,11 +100,11 @@ function adaptApiDetail(row: ApiTaskDetail): Task {
     assigneeIds:  row.assigneeId ? [row.assigneeId] : [],
     creatorId:    row.creatorId,
     listId:       row.listId,
-    dueDate:      row.deadline      ? new Date(row.deadline)     : undefined,
+    dueDate:      deadline     ? new Date(deadline)     : undefined,
     planStart:    row.planStart     ? new Date(row.planStart)    : undefined,
     duration:     row.durationDays  ? Number(row.durationDays)   : undefined,
-    actualStart:  row.startedAt     ? new Date(row.startedAt)    : undefined,
-    actualFinish: row.completedAt   ? new Date(row.completedAt)  : undefined,
+    actualStart:  startedAt   ? new Date(startedAt)  : undefined,
+    actualFinish: completedAt ? new Date(completedAt): undefined,
     storyPoints,
     timeEstimate: row.timeEstimateHours ? Math.round(Number(row.timeEstimateHours) * 60) : undefined,
     timeSpent:    row.accumulatedMinutes ? Number(row.accumulatedMinutes) : undefined,
@@ -109,7 +115,7 @@ function adaptApiDetail(row: ApiTaskDetail): Task {
     attachments:  [], // filled separately by loadAttachments
     createdAt:    new Date(row.createdAt),
     updatedAt:    new Date(row.updatedAt),
-    completedAt:  row.completedAt ? new Date(row.completedAt) : undefined,
+    completedAt:  completedAt ? new Date(completedAt) : undefined,
     order:        Number(row.displayOrder) || 0,
   };
 }

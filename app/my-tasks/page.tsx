@@ -36,7 +36,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TaskDetail } from "@/components/task-detail";
 import { TaskTableRow } from "@/components/task-table-row";
-import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { useTaskStore } from "@/lib/store";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 import { tasksApi, type MyTasksRow } from "@/lib/api/tasks";
@@ -162,7 +162,7 @@ export default function MyTasksPage() {
       if (updates.timeSpent !== undefined) payload.accumulatedMinutes = updates.timeSpent;
       if (updates.taskTypeId !== undefined) payload.taskTypeId = updates.taskTypeId || null;
       if (updates.estimateProgress !== undefined) payload.estimateProgress = updates.estimateProgress;
-      if (updates.assigneeId !== undefined) payload.assigneeId = updates.assigneeId || null;
+      if (updates.assigneeIds !== undefined) payload.assigneeId = updates.assigneeIds[0] || null;
       
       await tasksApi.update(taskId, payload);
       
@@ -640,15 +640,17 @@ export default function MyTasksPage() {
       </div>
 
       {/* Task Detail Panel - Drawer from right */}
-      <Sheet open={!!selectedTask} onOpenChange={(open) => !open && setActiveTask(undefined)}>
-        <SheetContent className="w-[400px] p-0">
-          {selectedTask && (
-            <TaskDetail
+<Sheet open={!!selectedTask} onOpenChange={(open) => !open && setActiveTask(undefined)}>
+          <SheetContent className="w-[400px] p-0">
+            <SheetTitle className="sr-only">Task Details</SheetTitle>
+            {selectedTask && (
+              <TaskDetail
               task={selectedTask}
               onClose={() => setActiveTask(undefined)}
               onTaskChange={(updated) => {
-                setActiveTask(updated);
+                setActiveTask(updated.id);
               }}
+              readOnly={true}
             />
           )}
         </SheetContent>

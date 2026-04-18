@@ -1,6 +1,6 @@
 import { api } from "./client";
 
-export type StatusType = "open" | "in_progress" | "review" | "done" | "closed";
+export type StatusType = "pending" | "in_progress" | "paused" | "review" | "completed" | "cancelled" | "blocked" | "overdue";
 
 export interface ListStatus {
   id: string;

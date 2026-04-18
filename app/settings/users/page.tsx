@@ -88,8 +88,8 @@ export default function UsersPage() {
         rolesApi.list(),
         positionsApi.list(),
       ]);
-      setEmployees(empRes.rows);
-      setTotalEmployees(empRes.total);
+      setEmployees(empRes);
+      setTotalEmployees(empRes.length);
       setRoles(rolesData);
       setPositions(positionsData);
     } catch (err) {
@@ -189,9 +189,9 @@ export default function UsersPage() {
     }
   };
 
-  const deactivatingEmployee = employees.find((e) => e.id === deactivateEmployeeId);
-  const activeCount = employees.filter((e) => e.isActive).length;
-  const adminCount = employees.filter((e) => e.role === "admin").length;
+  const deactivatingEmployee = employees?.find((e) => e.id === deactivateEmployeeId);
+  const activeCount = employees?.filter((e) => e.isActive).length ?? 0;
+  const adminCount = employees?.filter((e) => e.role === "admin").length ?? 0;
 
   const isCreateFormValid = !editingEmployee
     ? name.trim() && employeeCode.trim() && password.trim()

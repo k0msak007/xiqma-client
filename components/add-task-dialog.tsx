@@ -70,7 +70,7 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
 
   const list = lists.find((l) => l.id === listId);
   const currentSpace = spaces.find((s) => s.id === list?.spaceId);
-  const spaceType = currentSpace?.type || "organization";
+  const spaceType = (currentSpace as any)?.type || "organization";
 
   // Filter task types based on space type
   const filteredTaskTypes = taskTypes.filter((tt) => tt.category === spaceType);
@@ -103,10 +103,9 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
       setEmployeesLoading(true);
       setEmployeesError(null);
       
-      // Get space members instead of all employees
-      spacesApi.get(list.spaceId)
-        .then((spaceDetail) => {
-          console.log("[AddTaskDialog] Space members response:", spaceDetail);
+      const loadEmployees = async () => {
+        try {
+          const spaceDetail = await spacesApi.get(list.spaceId);
           const members = spaceDetail.members || [];
           console.log("[AddTaskDialog] Space members loaded:", members.length);
           setEmployees(members.map((m) => ({ 
@@ -114,25 +113,23 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
             name: m.employee.name, 
             avatarUrl: m.employee.avatarUrl ?? null 
           })));
-        })
-        .catch((err) => {
+        } catch (err) {
           console.error("Failed to load space members:", err);
-          // Fallback to all employees if space members fail
-          return employeesApi.list({ isActive: true, limit: 200 });
-        })
-        .then((res) => {
-          if (res) {
-            const employeeList = Array.isArray(res) ? res : (res.rows || []);
-            setEmployees(employeeList.map((e) => ({ id: e.id, name: e.name, avatarUrl: e.avatarUrl })));
+          try {
+            const empRes = await employeesApi.list({ isActive: true, limit: 200 });
+            const empData = empRes as unknown as { rows?: { id: string; name: string; avatarUrl: string | null }[] };
+            const employeeList = Array.isArray(empRes) ? empRes : (empData.rows || []);
+            setEmployees(employeeList.map((e: { id: string; name: string; avatarUrl: string | null }) => ({ id: e.id, name: e.name, avatarUrl: e.avatarUrl })));
+          } catch (empErr) {
+            console.error("Failed to load employees:", empErr);
+            setEmployeesError(empErr instanceof Error ? empErr.message : "Failed to load employees");
           }
-        })
-        .catch((err) => {
-          console.error("Failed to load employees:", err);
-          setEmployeesError(err instanceof Error ? err.message : "Failed to load employees");
-        })
-        .finally(() => {
+        } finally {
           setEmployeesLoading(false);
-        });
+        }
+      };
+      
+      loadEmployees();
     }
   }, [open, list?.spaceId]);
 

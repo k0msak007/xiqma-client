@@ -35,7 +35,7 @@ const PRESET_COLORS = [
 export function AddStatusDialog({ open, onOpenChange, listId, onSuccess }: AddStatusDialogProps) {
   const [name, setName] = useState("");
   const [color, setColor] = useState(PRESET_COLORS[0]);
-  const [type, setType] = useState<"open" | "in_progress" | "review" | "done" | "closed">("open");
+  const [type, setType] = useState<"pending" | "in_progress" | "paused" | "review" | "completed" | "cancelled" | "blocked" | "overdue">("pending");
   const [saving, setSaving] = useState(false);
 
   const handleSubmit = async () => {
@@ -54,7 +54,7 @@ export function AddStatusDialog({ open, onOpenChange, listId, onSuccess }: AddSt
       }
       setName("");
       setColor(PRESET_COLORS[0]);
-      setType("open");
+      setType("pending");
       onOpenChange(false);
     } catch (error) {
       console.error("Failed to create status:", error);
@@ -105,7 +105,7 @@ export function AddStatusDialog({ open, onOpenChange, listId, onSuccess }: AddSt
           <div className="space-y-2">
             <Label>Type</Label>
             <div className="flex gap-2 flex-wrap">
-              {(["open", "in_progress", "review", "done", "closed"] as const).map((t) => (
+              {(["pending", "in_progress", "paused", "review", "completed", "cancelled", "blocked", "overdue"] as const).map((t) => (
                 <button
                   key={t}
                   type="button"

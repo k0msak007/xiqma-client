@@ -49,9 +49,16 @@ export interface UpdateEmployeePayload {
 }
 
 export interface EmployeeListResponse {
-  rows: Employee[];
+  employees: Employee[];
   total: number;
   totalPages?: number;
+}
+
+export interface EmployeeListMeta {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
 }
 
 export interface ChangePasswordPayload {
@@ -60,7 +67,6 @@ export interface ChangePasswordPayload {
 }
 
 export const employeesApi = {
-  listAll: () => api.get<{ rows: Employee[] }>("/employees/all").then((res) => res.rows),
   list: (params?: { search?: string; department?: string; isActive?: boolean; page?: number; limit?: number }) => {
     const query = new URLSearchParams();
     if (params?.search)     query.set("search", params.search);
@@ -68,8 +74,10 @@ export const employeesApi = {
     if (params?.isActive !== undefined) query.set("isActive", String(params.isActive));
     if (params?.page)       query.set("page", String(params.page));
     if (params?.limit)      query.set("limit", String(params.limit));
-    return api.get<EmployeeListResponse>(`/employees?${query.toString()}`);
+    const qs = query.toString();
+    return api.get<Employee[]>(`/employees${qs ? `?${qs}` : ""}`);
   },
+  listAll: () => api.get<Employee[]>("/employees/all"),
   get:        (id: string) => api.get<EmployeeDetail>(`/employees/${id}`),
   create:     (data: CreateEmployeePayload) => api.post<Employee>("/employees", data),
   update:     (id: string, data: UpdateEmployeePayload) => api.put<Employee>(`/employees/${id}`, data),

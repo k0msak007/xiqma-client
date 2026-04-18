@@ -97,14 +97,14 @@ export interface User {
 // Status point count type - determines how status affects point calculation
 export type StatusPointCountType = "not_counted" | "in_progress" | "complete";
 
-// Status types
+// Status types (must match database enum: pending, in_progress, paused, review, completed, cancelled, blocked, overdue)
 export interface Status {
   id: string;
   name: string;
   color: string;
   order: number;
-  type: "open" | "in_progress" | "review" | "done" | "closed";
-  pointCountType: StatusPointCountType; // How this status counts for points
+  type: "pending" | "in_progress" | "paused" | "review" | "completed" | "cancelled" | "blocked" | "overdue" | "closed";
+  pointCountType: StatusPointCountType;
 }
 
 // Priority types
@@ -242,6 +242,7 @@ export interface Space {
   name: string;
   color: string;
   icon?: string;
+  type?: "organization" | "project";
   memberIds: string[];
   order: number;
   createdAt: Date;
