@@ -93,19 +93,35 @@ function getWorkingDaysInPeriod(
   return workingDays;
 }
 
+/** Convert JS getDay() (Sun=0..Sat=6) to ISO DOW (Mon=1..Sun=7) */
+function isoDow(d: Date): number {
+  const js = d.getDay();
+  return js === 0 ? 7 : js;
+}
+
 function getDateRange(
   period: "week" | "month" | "quarter" | "year",
   referenceDate: Date = new Date(),
+  workDays: number[] = [1, 2, 3, 4, 5],
 ): { start: Date; end: Date } {
   const start = new Date(referenceDate);
   const end = new Date(referenceDate);
   switch (period) {
     case "week": {
-      const dayOfWeek = start.getDay();
-      const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-      start.setDate(start.getDate() + diff);
+      // Use min/max of work_days as the work-week span.
+      // If today is before the work-week starts (e.g. Sunday for Mon-Fri worker),
+      // roll back to the most recent completed work week.
+      const validDays = workDays.length > 0 ? workDays : [1, 2, 3, 4, 5];
+      const firstDow = Math.min(...validDays);
+      const lastDow  = Math.max(...validDays);
+      const todayDow = isoDow(start);
+      const daysBack = todayDow >= firstDow
+        ? todayDow - firstDow
+        : todayDow - firstDow + 7;
+      start.setDate(start.getDate() - daysBack);
       start.setHours(0, 0, 0, 0);
-      end.setDate(start.getDate() + 6);
+      end.setTime(start.getTime());
+      end.setDate(start.getDate() + (lastDow - firstDow));
       end.setHours(23, 59, 59, 999);
       break;
     }
@@ -183,7 +199,17 @@ const STANDARD_STATUSES = [
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
+import { PermissionGate } from "@/components/permission-gate";
+
 export default function AnalyticsPage() {
+  return (
+    <PermissionGate requires={["view_analytics"]}>
+      <AnalyticsPageInner />
+    </PermissionGate>
+  );
+}
+
+function AnalyticsPageInner() {
   const { holidaySettings, taskTypes } = useTaskStore();
   const { t, language } = useTranslation();
 
@@ -192,6 +218,7 @@ export default function AnalyticsPage() {
   const [apiTasks,        setApiTasks]        = useState<CalendarTaskRow[]>([]);
   const [perfSummary,     setPerfSummary]     = useState<PerformanceSummary | null>(null);
   const [perfConfig,      setPerfConfig]      = useState<PerformanceConfig | null>(null);
+  const [selectedUserConfig, setSelectedUserConfig] = useState<PerformanceConfig | null>(null);
   const [velocityRows,    setVelocityRows]    = useState<VelocityRow[]>([]);
   const [efficiencyResult,setEfficiencyResult]= useState<EfficiencyResult | null>(null);
   const [bottleneckRows,  setBottleneckRows]  = useState<BottleneckRow[]>([]);
@@ -233,9 +260,16 @@ export default function AnalyticsPage() {
   // ── Period-dependent load: analytics APIs re-run when period or user changes ─
   const loadAnalytics = useCallback(async () => {
     setTabLoading(true);
-    const dateRange = getDateRange(selectedPeriod);
-    const startStr  = format(dateRange.start, "yyyy-MM-dd");
-    const endStr    = format(dateRange.end,   "yyyy-MM-dd");
+    const workDays = selectedUserId === "all"
+      ? [1, 2, 3, 4, 5]
+      : (selectedUserConfig?.work_days && selectedUserConfig.work_days.length > 0
+          ? selectedUserConfig.work_days
+          : (perfConfig?.work_days && perfConfig.work_days.length > 0
+              ? perfConfig.work_days
+              : [1, 2, 3, 4, 5]));
+    const range = getDateRange(selectedPeriod, new Date(), workDays);
+    const startStr  = format(range.start, "yyyy-MM-dd");
+    const endStr    = format(range.end,   "yyyy-MM-dd");
     const empParam  = selectedUserId !== "all" ? selectedUserId : undefined;
 
     // ใช้ allSettled เพื่อให้ API ที่ fail (เช่น 403 สำหรับ employee) ไม่ทำให้ตัวอื่นพัง
@@ -261,16 +295,40 @@ export default function AnalyticsPage() {
     });
 
     setTabLoading(false);
-  }, [selectedPeriod, selectedUserId, isManagerOrAdmin]);
+  }, [selectedPeriod, selectedUserId, selectedUserConfig, perfConfig, isManagerOrAdmin]);
 
   useEffect(() => {
     if (!dataLoading) void loadAnalytics();
   }, [dataLoading, loadAnalytics]);
 
+  // Load selected employee's perf config (for work_days) when user changes
+  useEffect(() => {
+    if (selectedUserId === "all") {
+      setSelectedUserConfig(null);
+      return;
+    }
+    performanceConfigApi
+      .getByEmployee(selectedUserId)
+      .then(setSelectedUserConfig)
+      .catch(() => setSelectedUserConfig(null));
+  }, [selectedUserId]);
+
   // ── Holiday settings ────────────────────────────────────────────────────────
   const currentYear = new Date().getFullYear();
   const currentHolidaySettings = getHolidaySettingsForYear(holidaySettings, currentYear);
-  const dateRange = useMemo(() => getDateRange(selectedPeriod), [selectedPeriod]);
+
+  // Work days: selected employee's config > own config > default Mon-Fri.
+  // "All team" view always uses default — per-user work_days doesn't apply.
+  const effectiveWorkDays = useMemo(() => {
+    if (selectedUserId === "all") return [1, 2, 3, 4, 5];
+    const cfg = selectedUserConfig || perfConfig;
+    return (cfg?.work_days && cfg.work_days.length > 0) ? cfg.work_days : [1, 2, 3, 4, 5];
+  }, [selectedUserId, selectedUserConfig, perfConfig]);
+
+  const dateRange = useMemo(
+    () => getDateRange(selectedPeriod, new Date(), effectiveWorkDays),
+    [selectedPeriod, effectiveWorkDays],
+  );
   const workingDaysInPeriod = useMemo(
     () => getWorkingDaysInPeriod(dateRange.start, dateRange.end, currentHolidaySettings),
     [dateRange, currentHolidaySettings],
@@ -289,46 +347,70 @@ export default function AnalyticsPage() {
       return d >= dateRange.start && d <= dateRange.end;
     });
 
+    // Use list_statuses.type (status_type) as source of truth — t.status column is legacy
+    // and doesn't reflect kanban moves. Fall back to t.status only if status_type is null.
+    const bucketOf = (t: CalendarTaskRow): "in_progress" | "completed" | "backlog" | "other" => {
+      const raw = (t.status_type || t.status || "").toLowerCase();
+      if (["in_progress", "review", "paused", "blocked"].includes(raw)) return "in_progress";
+      if (["done", "closed", "completed"].includes(raw)) return "completed";
+      if (["open", "pending"].includes(raw)) return "backlog";
+      return "other";
+    };
+
     const assignedPoints   = perfSummary
       ? Number(perfSummary.assigned_points)
       : periodTasks.reduce((s, t) => s + (t.story_points ?? 0), 0);
     const inProgressPoints = periodTasks
-      .filter((t) => t.status === "in_progress" || t.status === "review")
+      .filter((t) => bucketOf(t) === "in_progress")
       .reduce((s, t) => s + (t.story_points ?? 0), 0);
     const completedPoints  = perfSummary
       ? Number(perfSummary.completed_points)
       : periodTasks
-          .filter((t) => t.status === "done" || t.status === "closed" || t.status === "completed")
+          .filter((t) => bucketOf(t) === "completed")
           .reduce((s, t) => s + (t.story_points ?? 0), 0);
     const backlogPoints    = periodTasks
-      .filter((t) => t.status === "open" || t.status === "pending")
+      .filter((t) => bucketOf(t) === "backlog")
       .reduce((s, t) => s + (t.story_points ?? 0), 0);
 
-    // Daily target from config, fallback to 8 pts/day
-    const dailyTarget    = perfConfig?.point_target
-      ? (perfConfig.point_period === "week"
-          ? perfConfig.point_target / 5
-          : perfConfig.point_period === "month"
-          ? perfConfig.point_target / 20
-          : 8)
-      : 8;
-    const targetPoints       = Math.round(dailyTarget * workingDaysInPeriod);
+    // Target calculation — only for individual user view.
+    // Target = point_target × ratio × (how many config-periods fit the selected period).
+    // e.g. 40 pts/week × 0.8 → week view = 32, month view = 128 (×4 weeks).
+    const cfg = selectedUserId === "all" ? null : selectedUserConfig;
+    const ratio = cfg?.expected_ratio != null ? Number(cfg.expected_ratio) : 1;
+    const daysPerWeek = cfg?.days_per_week != null ? Number(cfg.days_per_week) : 5;
+
+    // Convert period → normalized weeks (approximate, but matches user intent: month = 4 weeks)
+    const periodInWeeks = { day: 1 / daysPerWeek, week: 1, month: 4, quarter: 13, year: 52 };
+    const selectedWeeks = periodInWeeks[selectedPeriod];
+
+    let targetPoints = 0;
+    let dailyTarget = 0;
+    if (cfg?.point_target != null) {
+      const pt = Number(cfg.point_target);
+      const cfgWeeks = periodInWeeks[cfg.point_period] ?? 1;
+      const periodScale = selectedWeeks / cfgWeeks;
+      targetPoints = Math.round(pt * ratio * periodScale);
+      // Daily target (for display only) — derived from config
+      dailyTarget = (pt * ratio) / (cfgWeeks * daysPerWeek);
+    }
     const performancePercent = targetPoints > 0 ? (completedPoints / targetPoints) * 100 : 0;
 
     return {
+      cfg,
+      ratio,
       assignedPoints,
       inProgressPoints,
       completedPoints,
       backlogPoints,
       targetPoints,
       performancePercent,
-      dailyTarget:  Math.round(dailyTarget),
+      dailyTarget:  Math.round(dailyTarget * 10) / 10,
       workingDays:  workingDaysInPeriod,
       totalTasks:   perfSummary?.total_tasks    ?? periodTasks.length,
       overdueTasks: perfSummary?.overdue_tasks  ?? 0,
       completionRate: perfSummary?.completion_rate ?? 0,
     };
-  }, [apiTasks, selectedUserId, dateRange, perfSummary, perfConfig, workingDaysInPeriod]);
+  }, [apiTasks, selectedUserId, dateRange, perfSummary, selectedUserConfig, workingDaysInPeriod]);
 
   // ── VELOCITY TAB ──────────────────────────────────────────────────────────
   const velocityData = useMemo(() => {
@@ -389,13 +471,16 @@ export default function AnalyticsPage() {
   // ── EFFICIENCY TAB ─────────────────────────────────────────────────────────
   const efficiencyData = useMemo(() => {
     // Per-task breakdown from calendar tasks (for the bar chart)
-    const completedTasks = apiTasks.filter(
-      (t) =>
-        (t.status === "done" || t.status === "closed" || t.status === "completed") &&
+    const completedTasks = apiTasks.filter((t) => {
+      const s = (t.status_type || t.status || "").toLowerCase();
+      const isDone = s === "done" || s === "closed" || s === "completed";
+      return (
+        isDone &&
         t.time_estimate_hours &&
         t.accumulated_minutes > 0 &&
-        (selectedUserId === "all" || t.assignee_id === selectedUserId),
-    );
+        (selectedUserId === "all" || t.assignee_id === selectedUserId)
+      );
+    });
     const taskChartData = completedTasks.slice(0, 10).map((task) => ({
       name:      task.title.substring(0, 15) + "…",
       estimated: Math.round((task.time_estimate_hours ?? 0)),
@@ -687,98 +772,185 @@ export default function AnalyticsPage() {
             </Card>
           </div>
 
-          {/* Performance Gauge & Target */}
-          <div className="grid gap-4 md:grid-cols-2">
+          {/* Performance Gauge & Target — only for individual user view */}
+          {selectedUserId === "all" ? (
             <Card>
-              <CardHeader>
-                <CardTitle>Performance %</CardTitle>
-                <CardDescription>
-                  (Completed Points / Target Points) × 100
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center justify-center gap-8">
-                  <PerformanceGauge
-                    value={performanceMetrics.performancePercent}
-                    label={language === "th" ? "ประสิทธิภาพ" : "Performance"}
-                  />
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/10">
-                        <CheckCircle2 className="h-5 w-5 text-green-500" />
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">
-                          {language === "th" ? "เสร็จแล้ว" : "Completed"}
-                        </p>
-                        <p className="text-xl font-bold">{performanceMetrics.completedPoints} pts</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
-                        <Target className="h-5 w-5 text-blue-500" />
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">
-                          {language === "th" ? "เป้าหมาย" : "Target"}
-                        </p>
-                        <p className="text-xl font-bold">{performanceMetrics.targetPoints} pts</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>
-                  {language === "th" ? "การคำนวณ Target" : "Target Calculation"}
-                </CardTitle>
-                <CardDescription>
+              <CardContent className="flex items-center gap-3 py-6 text-muted-foreground">
+                <Users className="h-5 w-5 shrink-0" />
+                <p className="text-sm">
                   {language === "th"
-                    ? "คำนวณจากวันทำงานจริง (หักวันหยุด)"
-                    : "Calculated from actual working days (minus holidays)"}
-                  {perfConfig && (
-                    <span className="ml-1 text-xs">
-                      — config: {perfConfig.point_target} pts/{perfConfig.point_period}
-                    </span>
-                  )}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="rounded-lg border p-4">
-                    <p className="text-sm text-muted-foreground">
-                      {language === "th" ? "Daily Target" : "Daily Target"}
-                    </p>
-                    <p className="text-2xl font-bold">{performanceMetrics.dailyTarget}</p>
-                    <p className="text-xs text-muted-foreground">points/day</p>
-                  </div>
-                  <div className="rounded-lg border p-4">
-                    <p className="text-sm text-muted-foreground">
-                      {language === "th" ? "วันทำงาน" : "Working Days"}
-                    </p>
-                    <p className="text-2xl font-bold">{performanceMetrics.workingDays}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {language === "th"
-                        ? `ใน${selectedPeriod === "week" ? "สัปดาห์" : selectedPeriod === "month" ? "เดือน" : selectedPeriod === "quarter" ? "ไตรมาส" : "ปี"}นี้`
-                        : `in this ${selectedPeriod}`}
-                    </p>
-                  </div>
-                </div>
-                <div className="rounded-lg bg-muted/50 p-4">
-                  <p className="text-sm font-medium mb-2">
-                    {language === "th" ? "สูตรการคำนวณ" : "Formula"}
-                  </p>
-                  <code className="text-xs bg-background px-2 py-1 rounded">
-                    Target = Daily Target × Working Days = {performanceMetrics.dailyTarget} ×{" "}
-                    {performanceMetrics.workingDays} = {performanceMetrics.targetPoints} pts
-                  </code>
-                </div>
+                    ? "เลือกพนักงานจาก dropdown ด้านบนเพื่อดู Target และ Performance % รายบุคคล (ภาพรวมทีมจะไม่แสดงเป้าหมาย เนื่องจากแต่ละคนมี target คนละระดับ)"
+                    : "Select an employee from the dropdown above to view individual Target and Performance %. (Team-wide view hides targets since each person has different goals.)"}
+                </p>
               </CardContent>
             </Card>
-          </div>
+          ) : !performanceMetrics.cfg ? (
+            <Card>
+              <CardContent className="flex items-center gap-3 py-6 text-muted-foreground">
+                <AlertCircle className="h-5 w-5 shrink-0 text-amber-500" />
+                <p className="text-sm">
+                  {language === "th" ? (
+                    <>
+                      ยังไม่ได้ตั้งค่า Performance Config สำหรับพนักงานคนนี้ —{" "}
+                      <a href="/settings/performance" className="text-primary underline">
+                        ไปตั้งค่า
+                      </a>
+                    </>
+                  ) : (
+                    <>
+                      Performance Config not set for this employee —{" "}
+                      <a href="/settings/performance" className="text-primary underline">
+                        configure now
+                      </a>
+                    </>
+                  )}
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    Performance %
+                    {performanceMetrics.performancePercent >= 100 && (
+                      <Badge className="bg-green-500 text-white hover:bg-green-500">
+                        {language === "th" ? "ถึงเป้า" : "On Target"}
+                      </Badge>
+                    )}
+                    {performanceMetrics.performancePercent >= 80 &&
+                      performanceMetrics.performancePercent < 100 && (
+                        <Badge variant="outline" className="border-blue-500 text-blue-600">
+                          {language === "th" ? "ใกล้เป้า" : "Near Target"}
+                        </Badge>
+                      )}
+                    {performanceMetrics.performancePercent < 80 && (
+                      <Badge variant="outline" className="border-amber-500 text-amber-600">
+                        {language === "th" ? "ต่ำกว่าเป้า" : "Below Target"}
+                      </Badge>
+                    )}
+                  </CardTitle>
+                  <CardDescription>
+                    (Completed / Target) × 100 —{" "}
+                    {language === "th"
+                      ? selectedPeriod === "week" ? "สัปดาห์นี้" : selectedPeriod === "month" ? "เดือนนี้" : selectedPeriod === "quarter" ? "ไตรมาสนี้" : "ปีนี้"
+                      : `this ${selectedPeriod}`}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center justify-center gap-8">
+                    <PerformanceGauge
+                      value={performanceMetrics.performancePercent}
+                      label={language === "th" ? "ประสิทธิภาพ" : "Performance"}
+                    />
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/10">
+                          <CheckCircle2 className="h-5 w-5 text-green-500" />
+                        </div>
+                        <div>
+                          <p className="text-sm text-muted-foreground">
+                            {language === "th" ? "เสร็จแล้ว" : "Completed"}
+                          </p>
+                          <p className="text-xl font-bold">{performanceMetrics.completedPoints} pts</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
+                          <Target className="h-5 w-5 text-blue-500" />
+                        </div>
+                        <div>
+                          <p className="text-sm text-muted-foreground">
+                            {language === "th" ? "เป้าหมาย" : "Target"}
+                          </p>
+                          <p className="text-xl font-bold">{performanceMetrics.targetPoints} pts</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10">
+                          {performanceMetrics.completedPoints >= performanceMetrics.targetPoints ? (
+                            <TrendingUp className="h-5 w-5 text-green-500" />
+                          ) : (
+                            <TrendingDown className="h-5 w-5 text-amber-500" />
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-sm text-muted-foreground">
+                            {language === "th" ? "คงเหลือ" : "Remaining"}
+                          </p>
+                          <p className="text-xl font-bold">
+                            {Math.max(0, performanceMetrics.targetPoints - performanceMetrics.completedPoints)} pts
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>
+                    {language === "th" ? "การคำนวณ Target" : "Target Calculation"}
+                  </CardTitle>
+                  <CardDescription>
+                    {language === "th"
+                      ? "เป้าหมายทั้งช่วง = point target × ratio × จำนวน period ที่ครอบคลุม"
+                      : "Full-period target = point target × ratio × periods covered"}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground">
+                        {language === "th" ? "Config" : "Config"}
+                      </p>
+                      <p className="text-lg font-bold">{performanceMetrics.cfg.point_target}</p>
+                      <p className="text-[10px] text-muted-foreground">
+                        pts/{performanceMetrics.cfg.point_period}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground">
+                        {language === "th" ? "Ratio" : "Ratio"}
+                      </p>
+                      <p className="text-lg font-bold">×{performanceMetrics.ratio.toFixed(2)}</p>
+                      <p className="text-[10px] text-muted-foreground">expected</p>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground">
+                        {language === "th" ? "Period Scale" : "Period Scale"}
+                      </p>
+                      <p className="text-lg font-bold">
+                        ×{(() => {
+                          const weeks = { day: 1 / Number(performanceMetrics.cfg.days_per_week), week: 1, month: 4, quarter: 13, year: 52 };
+                          const scale = weeks[selectedPeriod] / (weeks[performanceMetrics.cfg.point_period] ?? 1);
+                          return scale % 1 === 0 ? scale : scale.toFixed(2);
+                        })()}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {performanceMetrics.cfg.point_period} → {selectedPeriod}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-muted/50 p-4">
+                    <p className="text-sm font-medium mb-2">
+                      {language === "th" ? "สูตรการคำนวณ" : "Formula"}
+                    </p>
+                    <code className="text-xs bg-background px-2 py-1 rounded block">
+                      Target = {performanceMetrics.cfg.point_target} × {performanceMetrics.ratio.toFixed(2)}
+                      {(() => {
+                        const weeks = { day: 1 / Number(performanceMetrics.cfg.days_per_week), week: 1, month: 4, quarter: 13, year: 52 };
+                        const scale = weeks[selectedPeriod] / (weeks[performanceMetrics.cfg.point_period] ?? 1);
+                        return scale === 1 ? "" : ` × ${scale % 1 === 0 ? scale : scale.toFixed(2)}`;
+                      })()}
+                      {" = "}<strong>{performanceMetrics.targetPoints} pts</strong>
+                    </code>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
 
           {/* Task Type Analysis */}
           <Card>

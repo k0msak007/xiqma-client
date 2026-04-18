@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { format } from "date-fns";
-import { Calendar as CalendarIcon, Play, Square, MoreHorizontal, UserPlus, Check } from "lucide-react";
+import { Calendar as CalendarIcon, Play, Square, MoreHorizontal, UserPlus, Check, Flag, TrendingUp, TrendingDown, Minus, Timer, AlertCircle } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -243,37 +244,52 @@ const variance = useMemo(() => {
     return `${mins}m`;
   };
 
-  const getVarianceColor = (v: number) => {
-    if (v > 10) return "text-red-500"; // Behind schedule
-    if (v < -10) return "text-green-500"; // Ahead of schedule
-    return "text-muted-foreground"; // On track
+  const getVarianceMeta = (v: number) => {
+    if (v > 10) return { color: "text-red-600 bg-red-50 border-red-200", icon: TrendingDown, label: "Behind" };
+    if (v < -10) return { color: "text-green-600 bg-green-50 border-green-200", icon: TrendingUp, label: "Ahead" };
+    return { color: "text-muted-foreground bg-muted border-transparent", icon: Minus, label: "On track" };
   };
+
+  const isCompleted = status?.type === "completed" || status?.type === "closed";
+  const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && !isCompleted;
+  const varianceMeta = getVarianceMeta(variance);
+  const VarianceIcon = varianceMeta.icon;
 
   return (
     <>
-      <tr 
+      <tr
         className={cn(
-          "border-b hover:bg-muted/50 transition-colors cursor-pointer",
-          isSelected && "bg-muted"
+          "group relative border-b transition-all cursor-pointer",
+          "hover:bg-primary/[0.03]",
+          isSelected && "bg-primary/5",
+          isTracking && "bg-red-50/40",
+          isCompleted && "opacity-75"
         )}
         onClick={onClick}
       >
-        {/* Task ID */}
-        <td className="p-2 text-xs text-muted-foreground font-mono" onClick={onClick}>
-          {task.taskId || "-"}
+        {/* Task ID (with priority accent bar) */}
+        <td className="relative px-2 py-2.5 text-[11px] text-muted-foreground font-mono" onClick={onClick}>
+          <div
+            className={cn(
+              "absolute inset-y-0 left-0 w-1 transition-all opacity-40 group-hover:opacity-100",
+              isSelected && "opacity-100"
+            )}
+            style={{ backgroundColor: priorityConfig[task.priority].color }}
+          />
+          <span className="rounded bg-muted/60 px-1.5 py-0.5">{task.taskId || "-"}</span>
         </td>
 
         {/* Title */}
-        <td className="p-2" onClick={onClick}>
+        <td className="px-2 py-2.5" onClick={onClick}>
           <div className="flex items-center gap-2">
-            <Checkbox 
-              checked={status?.type === "completed" || status?.type === "closed"}
-                onCheckedChange={(checked) => {
-                  const newStatus = checked 
-                    ? statuses.find(s => s.type === "completed")?.id 
-                    : statuses.find(s => s.type === "pending")?.id;
+            <Checkbox
+              checked={isCompleted}
+              onCheckedChange={(checked) => {
+                const newStatus = checked
+                  ? statuses.find(s => s.type === "completed")?.id
+                  : statuses.find(s => s.type === "pending")?.id;
                 if (newStatus) {
-                  handleUpdate({ 
+                  handleUpdate({
                     statusId: newStatus,
                     completedAt: checked ? new Date() : undefined,
                     actualFinish: checked ? new Date() : undefined
@@ -281,34 +297,52 @@ const variance = useMemo(() => {
                 }
               }}
               onClick={(e) => e.stopPropagation()}
+              className="shrink-0"
             />
-            <span className="text-sm font-medium truncate max-w-[180px]">{task.title}</span>
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span
+                className={cn(
+                  "text-sm font-medium truncate max-w-[220px]",
+                  isCompleted && "line-through text-muted-foreground"
+                )}
+              >
+                {task.title}
+              </span>
+              {(task.tags?.length > 0 || isOverdue) && (
+                <div className="mt-0.5 flex items-center gap-1">
+                  {isOverdue && (
+                    <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-red-600">
+                      <AlertCircle className="h-2.5 w-2.5" /> OVERDUE
+                    </span>
+                  )}
+                  {task.tags?.slice(0, 2).map(t => (
+                    <span key={t} className="text-[9px] text-muted-foreground bg-muted/60 rounded px-1">
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </td>
 
-        {/* Status */}
-        <td className="p-2" onClick={(e) => e.stopPropagation()}>
-          <Select
-            value={task.statusId}
-            onValueChange={(value) => handleUpdate({ statusId: value })}
-          >
-            <SelectTrigger className="h-7 w-[100px] text-xs">
-              <div className="flex items-center gap-1.5">
-                <div 
-                  className="h-2 w-2 rounded-full shrink-0" 
-                  style={{ backgroundColor: status?.color }}
-                />
-                <span className="truncate">{status?.name}</span>
-              </div>
+        {/* Status — colored pill */}
+        <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+          <Select value={task.statusId} onValueChange={(v) => handleUpdate({ statusId: v })}>
+            <SelectTrigger
+              className="h-6 w-[108px] border-0 px-2 text-[11px] font-semibold shadow-none focus:ring-0 hover:brightness-95"
+              style={{
+                backgroundColor: `${status?.color}1a`,
+                color: status?.color,
+              }}
+            >
+              <span className="truncate">{status?.name}</span>
             </SelectTrigger>
             <SelectContent>
               {statuses.map(s => (
                 <SelectItem key={s.id} value={s.id}>
                   <div className="flex items-center gap-1.5">
-                    <div 
-                      className="h-2 w-2 rounded-full" 
-                      style={{ backgroundColor: s.color }}
-                    />
+                    <div className="h-2 w-2 rounded-full" style={{ backgroundColor: s.color }} />
                     {s.name}
                   </div>
                 </SelectItem>
@@ -318,35 +352,27 @@ const variance = useMemo(() => {
         </td>
 
         {/* Task Type */}
-        <td className="p-2" onClick={(e) => e.stopPropagation()}>
+        <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
           <Select
             value={task.taskTypeId || "none"}
-            onValueChange={(value) => handleUpdate({ 
-              taskTypeId: value === "none" ? undefined : value 
-            })}
+            onValueChange={(value) => handleUpdate({ taskTypeId: value === "none" ? undefined : value })}
           >
-            <SelectTrigger className="h-7 w-[90px] text-xs">
+            <SelectTrigger className="h-7 w-[100px] border-transparent bg-transparent text-xs hover:bg-muted focus:ring-0">
               {taskType ? (
                 <div className="flex items-center gap-1.5">
-                  <div 
-                    className="h-2 w-2 rounded-full shrink-0" 
-                    style={{ backgroundColor: taskType.color }}
-                  />
+                  <div className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: taskType.color }} />
                   <span className="truncate">{taskType.name}</span>
                 </div>
               ) : (
-                <span className="text-muted-foreground">-</span>
+                <span className="text-muted-foreground">—</span>
               )}
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="none">-</SelectItem>
+              <SelectItem value="none">—</SelectItem>
               {taskTypes.map(tt => (
                 <SelectItem key={tt.id} value={tt.id}>
                   <div className="flex items-center gap-1.5">
-                    <div 
-                      className="h-2 w-2 rounded-full" 
-                      style={{ backgroundColor: tt.color }}
-                    />
+                    <div className="h-2 w-2 rounded-full" style={{ backgroundColor: tt.color }} />
                     {tt.name}
                   </div>
                 </SelectItem>
@@ -355,17 +381,14 @@ const variance = useMemo(() => {
           </Select>
         </td>
 
-        {/* Priority */}
-        <td className="p-2" onClick={(e) => e.stopPropagation()}>
-          <Select
-            value={task.priority}
-            onValueChange={(value) => handleUpdate({ priority: value as Priority })}
-          >
-            <SelectTrigger className="h-7 w-[90px] text-xs">
+        {/* Priority — flag icon */}
+        <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+          <Select value={task.priority} onValueChange={(v) => handleUpdate({ priority: v as Priority })}>
+            <SelectTrigger className="h-7 w-[96px] border-transparent bg-transparent text-xs hover:bg-muted focus:ring-0">
               <div className="flex items-center gap-1.5">
-                <div 
-                  className="h-2 w-2 rounded-full shrink-0" 
-                  style={{ backgroundColor: priorityConfig[task.priority].color }}
+                <Flag
+                  className="h-3 w-3 shrink-0"
+                  style={{ color: priorityConfig[task.priority].color, fill: priorityConfig[task.priority].color }}
                 />
                 <span className="truncate">{priorityConfig[task.priority].label}</span>
               </div>
@@ -374,10 +397,7 @@ const variance = useMemo(() => {
               {Object.entries(priorityConfig).map(([key, config]) => (
                 <SelectItem key={key} value={key}>
                   <div className="flex items-center gap-1.5">
-                    <div 
-                      className="h-2 w-2 rounded-full" 
-                      style={{ backgroundColor: config.color }}
-                    />
+                    <Flag className="h-3 w-3" style={{ color: config.color, fill: config.color }} />
                     {config.label}
                   </div>
                 </SelectItem>
@@ -387,57 +407,49 @@ const variance = useMemo(() => {
         </td>
 
         {/* Points */}
-        <td className="p-2" onClick={(e) => e.stopPropagation()}>
+        <td className="px-2 py-2.5 text-center" onClick={(e) => e.stopPropagation()}>
           <Select
             value={task.storyPoints?.toString() || "none"}
-            onValueChange={(value) => handleUpdate({ 
-              storyPoints: value === "none" ? undefined : parseInt(value) as StoryPoints 
-            })}
+            onValueChange={(value) => handleUpdate({ storyPoints: value === "none" ? undefined : parseInt(value) as StoryPoints })}
           >
-            <SelectTrigger className="h-7 w-[60px] text-xs">
-              <SelectValue placeholder="-" />
+            <SelectTrigger className="mx-auto h-7 w-[52px] border-transparent bg-transparent text-xs font-semibold hover:bg-muted focus:ring-0 [&>svg]:hidden justify-center">
+              <SelectValue placeholder="—" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="none">-</SelectItem>
+              <SelectItem value="none">—</SelectItem>
               {storyPointsOptions.map(point => (
-                <SelectItem key={point} value={point.toString()}>
-                  {point}
-                </SelectItem>
+                <SelectItem key={point} value={point.toString()}>{point}</SelectItem>
               ))}
             </SelectContent>
           </Select>
         </td>
 
-        {/* Duration (days) */}
-        <td className="p-2" onClick={(e) => e.stopPropagation()}>
+        {/* Duration */}
+        <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
           <Input
             type="number"
             min="1"
             value={task.duration || ""}
-            onChange={(e) => handleUpdate({ 
-              duration: e.target.value ? parseInt(e.target.value) : undefined 
-            })}
-            className="h-7 w-[60px] text-xs"
-            placeholder="-"
+            onChange={(e) => handleUpdate({ duration: e.target.value ? parseInt(e.target.value) : undefined })}
+            className="h-7 w-[56px] border-transparent bg-transparent text-xs hover:bg-muted focus:bg-background"
+            placeholder="—"
           />
         </td>
 
         {/* Plan Start */}
-        <td className="p-2" onClick={(e) => e.stopPropagation()}>
+        <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
           <Popover>
             <PopoverTrigger asChild>
-              <Button 
-                variant="ghost" 
-                size="sm" 
+              <Button
+                variant="ghost"
+                size="sm"
                 className={cn(
-                  "h-7 text-xs justify-start px-2 w-[85px]",
+                  "h-7 justify-start px-2 text-xs font-normal w-[92px]",
                   !task.planStart && "text-muted-foreground"
                 )}
               >
-                <CalendarIcon className="mr-1 h-3 w-3" />
-                {task.planStart 
-                  ? format(new Date(task.planStart), "MM/dd") 
-                  : "-"}
+                <CalendarIcon className="mr-1 h-3 w-3 opacity-60" />
+                {task.planStart ? format(new Date(task.planStart), "MMM d") : "—"}
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-auto p-0" align="start">
@@ -452,26 +464,28 @@ const variance = useMemo(() => {
         </td>
 
         {/* Plan Finish (calculated) */}
-        <td className="p-2 text-xs text-muted-foreground">
-          {planFinish ? format(planFinish, "MM/dd") : "-"}
+        <td className="px-2 py-2.5 text-xs text-muted-foreground">
+          <span className="rounded bg-muted/40 px-2 py-1">
+            {planFinish ? format(planFinish, "MMM d") : "—"}
+          </span>
         </td>
 
         {/* Actual Start */}
-        <td className="p-2" onClick={(e) => e.stopPropagation()}>
+        <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
           <Popover>
             <PopoverTrigger asChild>
-              <Button 
-                variant="ghost" 
-                size="sm" 
+              <Button
+                variant="ghost"
+                size="sm"
                 className={cn(
-                  "h-7 text-xs justify-start px-2 w-[85px]",
-                  !task.actualStart && "text-muted-foreground"
+                  "h-7 justify-start px-2 text-xs font-normal w-[92px]",
+                  task.actualStart ? "text-green-700" : "text-muted-foreground"
                 )}
               >
-                <CalendarIcon className="mr-1 h-3 w-3" />
+                <Play className="mr-1 h-3 w-3" />
                 {task.actualStart && !isNaN(new Date(task.actualStart).getTime())
-                  ? format(new Date(task.actualStart), "MM/dd") 
-                  : "-"}
+                  ? format(new Date(task.actualStart), "MMM d")
+                  : "—"}
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-auto p-0" align="start">
@@ -486,21 +500,21 @@ const variance = useMemo(() => {
         </td>
 
         {/* Actual Finish */}
-        <td className="p-2" onClick={(e) => e.stopPropagation()}>
+        <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
           <Popover>
             <PopoverTrigger asChild>
-              <Button 
-                variant="ghost" 
-                size="sm" 
+              <Button
+                variant="ghost"
+                size="sm"
                 className={cn(
-                  "h-7 text-xs justify-start px-2 w-[85px]",
-                  !task.actualFinish && "text-muted-foreground"
+                  "h-7 justify-start px-2 text-xs font-normal w-[92px]",
+                  task.actualFinish ? "text-green-700" : "text-muted-foreground"
                 )}
               >
-                <CalendarIcon className="mr-1 h-3 w-3" />
+                <Check className="mr-1 h-3 w-3" />
                 {task.actualFinish && !isNaN(new Date(task.actualFinish).getTime())
-                  ? format(new Date(task.actualFinish), "MM/dd") 
-                  : "-"}
+                  ? format(new Date(task.actualFinish), "MMM d")
+                  : "—"}
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-auto p-0" align="start">
@@ -514,98 +528,124 @@ const variance = useMemo(() => {
           </Popover>
         </td>
 
-        {/* %Plan Progress */}
-        <td className="p-2 text-xs">
+        {/* %Plan Progress — bar */}
+        <td className="px-2 py-2.5">
           <TooltipProvider>
             <Tooltip>
-              <TooltipTrigger>
-                <Badge variant="outline" className="font-mono">
-                  {planProgress.toFixed(0)}%
-                </Badge>
+              <TooltipTrigger asChild>
+                <div className="flex w-[80px] items-center gap-1.5">
+                  <Progress value={planProgress} className="h-1.5 flex-1 [&>div]:bg-slate-400" />
+                  <span className="text-[10px] font-mono font-medium tabular-nums text-muted-foreground w-7 text-right">
+                    {planProgress.toFixed(0)}%
+                  </span>
+                </div>
               </TooltipTrigger>
-              <TooltipContent>
-                Plan Progress: (Today - PlanStart) / Duration
-              </TooltipContent>
+              <TooltipContent>Plan Progress: (Today − PlanStart) / Duration</TooltipContent>
             </Tooltip>
           </TooltipProvider>
         </td>
 
-        {/* %Actual Progress */}
-        <td className="p-2 text-xs">
+        {/* %Actual Progress — bar */}
+        <td className="px-2 py-2.5">
           <TooltipProvider>
             <Tooltip>
-              <TooltipTrigger>
-                <Badge variant="secondary" className="font-mono">
-                  {actualProgress.toFixed(0)}%
-                </Badge>
+              <TooltipTrigger asChild>
+                <div className="flex w-[80px] items-center gap-1.5">
+                  <Progress
+                    value={actualProgress}
+                    className={cn(
+                      "h-1.5 flex-1",
+                      actualProgress >= 100 ? "[&>div]:bg-green-500" : "[&>div]:bg-primary"
+                    )}
+                  />
+                  <span className="text-[10px] font-mono font-semibold tabular-nums w-7 text-right">
+                    {actualProgress.toFixed(0)}%
+                  </span>
+                </div>
               </TooltipTrigger>
-              <TooltipContent>
-                Actual Progress: TimeSpent / TimeEstimate
-              </TooltipContent>
+              <TooltipContent>Actual Progress: Estimated by user</TooltipContent>
             </Tooltip>
           </TooltipProvider>
         </td>
 
-        {/* %Variance */}
-        <td className="p-2 text-xs">
+        {/* %Variance — with icon */}
+        <td className="px-2 py-2.5">
           <TooltipProvider>
             <Tooltip>
-              <TooltipTrigger>
-                <span className={cn("font-mono font-medium", getVarianceColor(variance))}>
+              <TooltipTrigger asChild>
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-mono font-semibold tabular-nums",
+                    varianceMeta.color
+                  )}
+                >
+                  <VarianceIcon className="h-2.5 w-2.5" />
                   {variance > 0 ? "+" : ""}{variance.toFixed(0)}%
                 </span>
               </TooltipTrigger>
-              <TooltipContent>
-                Variance: Plan Progress - Actual Progress
-                {variance > 0 && " (Behind schedule)"}
-                {variance < 0 && " (Ahead of schedule)"}
-              </TooltipContent>
+              <TooltipContent>{varianceMeta.label} — Plan − Actual</TooltipContent>
             </Tooltip>
           </TooltipProvider>
         </td>
 
         {/* Time Tracking */}
-        <td className="p-2" onClick={(e) => e.stopPropagation()}>
-          <div className="flex items-center gap-1">
+        <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center gap-1.5">
             {isTracking ? (
               <>
-                <Badge variant="destructive" className="font-mono text-[10px] animate-pulse">
+                <span className="inline-flex items-center gap-1 rounded-md bg-red-500/10 px-1.5 py-1 text-[10px] font-mono font-semibold text-red-600">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-red-500" />
+                  </span>
                   {formatElapsedTime(elapsedTime)}
-                </Badge>
+                </span>
                 {canTimer && (
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  className="h-6 w-6 text-destructive hover:text-destructive"
-                  onClick={handleToggleTracking}
-                >
-                  <Square className="h-3 w-3 fill-current" />
-                </Button>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 rounded-full bg-red-500 text-white hover:bg-red-600 hover:text-white"
+                          onClick={handleToggleTracking}
+                        >
+                          <Square className="h-2.5 w-2.5 fill-current" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Stop timer</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 )}
               </>
             ) : (
               <>
-                <span className="text-xs text-muted-foreground min-w-[40px]">
-                  {localTimeSpent || elapsedTime > 0 ? (
+                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground min-w-[52px]">
+                  {localTimeSpent > 0 ? (
                     <>
-                      {(() => {
-                        const totalMinutes = localTimeSpent + Math.floor(elapsedTime / 60);
-                        const h = Math.floor(totalMinutes / 60);
-                        const m = totalMinutes % 60;
-                        return h > 0 ? `${h}h ${m}m` : `${m}m`;
-                      })()}
+                      <Timer className="h-3 w-3" />
+                      {formatTimeSpent(localTimeSpent)}
                     </>
-                  ) : "-"}
+                  ) : (
+                    <span className="text-muted-foreground/60">—</span>
+                  )}
                 </span>
                 {canTimer && (
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  className="h-6 w-6 text-primary hover:text-primary"
-                  onClick={handleToggleTracking}
-                >
-                  <Play className="h-3 w-3 fill-current" />
-                </Button>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 rounded-full opacity-0 group-hover:opacity-100 hover:bg-primary/10 hover:text-primary"
+                          onClick={handleToggleTracking}
+                        >
+                          <Play className="h-3 w-3 fill-current" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Start timer</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 )}
               </>
             )}
@@ -613,17 +653,17 @@ const variance = useMemo(() => {
         </td>
 
         {/* Assignees */}
-        <td className="p-2" onClick={(e) => e.stopPropagation()}>
-          <div className="flex items-center gap-1">
-            <div className="flex -space-x-1">
-              {assignees.slice(0, 2).map(user => user && (
+        <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center">
+            <div className="flex -space-x-1.5">
+              {assignees.slice(0, 3).map(user => user && (
                 <TooltipProvider key={user.id}>
                   <Tooltip>
-                    <TooltipTrigger>
-                      <Avatar className="h-6 w-6 border-2 border-background">
+                    <TooltipTrigger asChild>
+                      <Avatar className="h-6 w-6 border-2 border-background transition-transform hover:z-10 hover:scale-110 cursor-pointer">
                         <AvatarImage src={user.avatar} />
-                        <AvatarFallback className="text-[10px]">
-                          {user.name.charAt(0)}
+                        <AvatarFallback className="bg-gradient-to-br from-primary/20 to-primary/10 text-[9px] font-semibold">
+                          {user.name.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase()}
                         </AvatarFallback>
                       </Avatar>
                     </TooltipTrigger>
@@ -631,49 +671,63 @@ const variance = useMemo(() => {
                   </Tooltip>
                 </TooltipProvider>
               ))}
-              {assignees.length > 2 && (
-                <Badge variant="secondary" className="h-6 px-1 text-[10px]">
-                  +{assignees.length - 2}
-                </Badge>
-)}
+              {assignees.length > 3 && (
+                <div className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-background bg-muted text-[9px] font-semibold text-muted-foreground">
+                  +{assignees.length - 3}
+                </div>
+              )}
+              {assignees.length === 0 && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={() => setShowReassignDialog(true)}
+                        className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-dashed border-muted-foreground/30 text-muted-foreground hover:border-primary hover:text-primary transition-colors"
+                      >
+                        <UserPlus className="h-3 w-3" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Assign</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
             </div>
           </div>
         </td>
 
         {/* Actions */}
-        <td className="p-2" onClick={(e) => e.stopPropagation()}>
+        <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100 transition-opacity"
+              >
                 <MoreHorizontal className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
+            <DropdownMenuContent align="end" className="w-44">
               <DropdownMenuItem onClick={onClick}>View Details</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setShowReassignDialog(true)}>
-                Re-assign
+                <UserPlus className="mr-2 h-3.5 w-3.5" /> Re-assign
               </DropdownMenuItem>
-              <DropdownMenuItem 
+              <DropdownMenuItem
                 onClick={() => {
                   if (onUpdate) {
-                    onUpdate(task.id, { 
-                      estimateProgress: 100
-                    });
+                    onUpdate(task.id, { estimateProgress: 100 });
                     toast.success("Marked as complete");
                   }
                 }}
               >
-                Mark as Complete
+                <Check className="mr-2 h-3.5 w-3.5" /> Mark as Complete
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem 
+              <DropdownMenuItem
                 className="text-destructive"
                 onClick={() => {
-                  if (onDelete) {
-                    onDelete(task.id);
-                  } else {
-                    deleteTask(task.id);
-                  }
+                  if (onDelete) onDelete(task.id);
+                  else deleteTask(task.id);
                 }}
               >
                 Delete

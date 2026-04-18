@@ -1,9 +1,21 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { format } from "date-fns";
-import { Calendar, Clock, MoreHorizontal, User, MessageSquare, Play, Square, CheckCircle2, Circle, GripVertical, Timer } from "lucide-react";
+import { format, differenceInDays } from "date-fns";
+import {
+  Calendar,
+  Clock,
+  MoreHorizontal,
+  MessageSquare,
+  Play,
+  Square,
+  CheckCircle2,
+  Timer,
+  Flag,
+  AlertCircle,
+  Paperclip,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +43,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { priorityConfig, type Task, type Status, type Priority } from "@/lib/types";
 import { getCachedEmployee } from "@/lib/employee-cache";
 import { toast } from "sonner";
@@ -52,58 +70,71 @@ function formatTimeSpent(minutes: number) {
   return `${m}m`;
 }
 
-export function TaskCardBoard({ task, onClick, isSelected, statuses = [], onUpdate, onDelete }: TaskCardBoardProps) {
+function formatElapsed(seconds: number) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+export function TaskCardBoard({
+  task,
+  onClick,
+  isSelected,
+  statuses = [],
+  onUpdate,
+  onDelete,
+}: TaskCardBoardProps) {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
   const [localTimeSpent, setLocalTimeSpent] = useState(task.timeSpent || 0);
   const [runningTimer, setRunningTimer] = useState<{ id: string; startedAt: string } | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  
-  // Sync localTimeSpent when task.timeSpent changes (e.g., from parent refresh)
+
   useEffect(() => {
     setLocalTimeSpent(task.timeSpent || 0);
   }, [task.timeSpent]);
-  
+
   const priorityInfo = priorityConfig[task.priority];
   const isOverdue = task.dueDate && new Date(task.dueDate) < new Date();
   const isCompleted = task.estimateProgress === 100;
   const canTimer = user && (user.role === "admin" || task.assigneeIds.includes(user.id));
   const isTracking = !!runningTimer;
-  
-  // Update elapsed time every second when tracking
+
+  const daysUntilDue = task.dueDate
+    ? differenceInDays(new Date(task.dueDate), new Date())
+    : null;
+  const isDueSoon = daysUntilDue !== null && daysUntilDue >= 0 && daysUntilDue <= 2;
+
   useEffect(() => {
     if (!runningTimer) return;
-    
     const updateElapsed = () => {
-      if (runningTimer) {
-        const startTime = new Date(runningTimer.startedAt).getTime();
-        setElapsedSeconds(Math.floor((Date.now() - startTime) / 1000));
-      }
+      const startTime = new Date(runningTimer.startedAt).getTime();
+      setElapsedSeconds(Math.floor((Date.now() - startTime) / 1000));
     };
-    
     updateElapsed();
     const interval = setInterval(updateElapsed, 1000);
     return () => clearInterval(interval);
   }, [runningTimer]);
-  
-  // Check for running timer on mount
+
   useEffect(() => {
     const checkTimer = async () => {
       try {
         const sessions = await tasksApi.getTimer(task.id);
-        const running = sessions.find(s => !s.endedAt);
-        if (running) {
-          setRunningTimer(running);
-        } else {
+        const running = sessions.find((s) => !s.endedAt);
+        if (running) setRunningTimer(running);
+        else {
           setRunningTimer(null);
           setElapsedSeconds(0);
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     };
     checkTimer();
   }, [task.id]);
-  
-  // Timer toggle
+
   const toggleTimer = async () => {
     try {
       if (runningTimer) {
@@ -111,11 +142,8 @@ export function TaskCardBoard({ task, onClick, isSelected, statuses = [], onUpda
         setRunningTimer(null);
         setElapsedSeconds(0);
         toast.success("Timer stopped");
-        
-        // Use duration from stop result (this is the time added in this session)
         const addedMinutes = stopResult?.durationMin ?? 0;
-        const newTimeSpent = localTimeSpent + addedMinutes;
-        setLocalTimeSpent(newTimeSpent);
+        setLocalTimeSpent(localTimeSpent + addedMinutes);
       } else {
         const session = await tasksApi.startTimer(task.id);
         setRunningTimer(session);
@@ -131,336 +159,435 @@ export function TaskCardBoard({ task, onClick, isSelected, statuses = [], onUpda
       }
     }
   };
-  
-  const formatElapsed = (seconds: number) => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}:${s.toString().padStart(2, "0")}`;
-  };
-  
-  // Get current status
-  const currentStatus = statuses.find(s => s.id === task.statusId);
-  
-  // Quick edit handlers
+
+  const currentStatus = statuses.find((s) => s.id === task.statusId);
+
   const handleStatusChange = async (newStatusId: string) => {
     if (onUpdate) {
       await onUpdate(task.id, { statusId: newStatusId });
       toast.success("Status updated");
     }
   };
-  
+
   const handlePriorityChange = async (newPriority: Priority) => {
     if (onUpdate) {
       await onUpdate(task.id, { priority: newPriority });
       toast.success("Priority updated");
     }
   };
-  
+
   const handleProgressChange = async (value: number) => {
-    if (onUpdate) {
-      await onUpdate(task.id, { estimateProgress: value });
-    }
+    if (onUpdate) await onUpdate(task.id, { estimateProgress: value });
   };
-  
+
   const handleDueDateChange = async (date: Date | undefined) => {
     if (onUpdate) {
-      await onUpdate(task.id, { 
-        dueDate: date
-      });
+      await onUpdate(task.id, { dueDate: date });
       toast.success("Due date updated");
     }
   };
-  
+
   const handleActualStartChange = async (date: Date | undefined) => {
     if (onUpdate) {
-      await onUpdate(task.id, { 
-        actualStart: date
-      });
+      await onUpdate(task.id, { actualStart: date });
       toast.success("Actual start updated");
     }
   };
-  
+
   const handleActualFinishChange = async (date: Date | undefined) => {
     if (onUpdate) {
-      await onUpdate(task.id, { 
-        actualFinish: date
-      });
+      await onUpdate(task.id, { actualFinish: date });
       toast.success("Actual finish updated");
     }
   };
 
   return (
-    <div
-      onClick={onClick}
-      className={cn(
-        "group relative cursor-pointer rounded-xl border-2 bg-card p-3 shadow-sm transition-all hover:shadow-md",
-        isSelected && "ring-2 ring-primary border-primary",
-        isCompleted && "border-green-200 bg-green-50/50"
-      )}
-      style={{ 
-        borderLeftColor: currentStatus?.color || priorityInfo.color,
-        borderLeftWidth: '4px'
-      }}
-    >
-      {/* Status Badge - Click to change */}
-      <div className="mb-2 flex items-center justify-between">
-        <Select 
-          value={task.statusId} 
-          onValueChange={handleStatusChange}
-          onOpenChange={(open) => {
-            if (!open) return;
-            event?.stopPropagation();
-          }}
-        >
-          <SelectTrigger 
-            className="h-6 w-fit px-2 text-[10px] font-medium"
-            style={{ 
-              backgroundColor: `${currentStatus?.color}20`,
-              color: currentStatus?.color 
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {statuses.map((status) => (
-              <SelectItem key={status.id} value={status.id} className="text-xs">
-                <div className="flex items-center gap-2">
-                  <div 
-                    className="h-2 w-2 rounded-full" 
-                    style={{ backgroundColor: status.color }} 
-                  />
-                  {status.name}
-                </div>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        
-        {/* Menu */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-            <Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100">
-              <MoreHorizontal className="h-3 w-3" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => router.push(`/task/${task.id}`)}>
-              Open in full page
-            </DropdownMenuItem>
-            {onUpdate && (
-              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleProgressChange(100); }}>
-                Mark as Complete
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuSeparator />
-            {onDelete && (
-              <DropdownMenuItem className="text-destructive" onClick={(e) => { e.stopPropagation(); onDelete(task.id); }}>
-                Delete
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-
-      {/* Title */}
-      <h4 className="text-sm font-semibold leading-tight mb-2 line-clamp-2">
-        {task.title}
-      </h4>
-
-      {/* Progress Bar */}
-      {task.estimateProgress !== undefined && task.estimateProgress > 0 && (
-        <div className="mb-2">
-          <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-1">
-            <span>Progress</span>
-            <span className="font-medium">{task.estimateProgress}%</span>
-          </div>
-          <Progress value={task.estimateProgress} className="h-1.5" />
-        </div>
-      )}
-
-      {/* Dates Grid */}
-      <div className="grid grid-cols-2 gap-1 mb-2 text-[10px]">
-        {/* Due Date */}
-        <Popover>
-          <PopoverTrigger asChild onClick={(e) => e.stopPropagation()}>
-            <div 
-              className={cn(
-                "flex items-center gap-1 rounded px-1.5 py-1 cursor-pointer hover:bg-muted",
-                isOverdue && "text-red-600 bg-red-50"
-              )}
-            >
-              <Calendar className="h-3 w-3" />
-              <span className="truncate">
-                {task.dueDate ? format(new Date(task.dueDate), "MMM d") : "Due"}
-              </span>
-            </div>
-          </PopoverTrigger>
-          <PopoverContent className="w-auto p-0" align="start">
-            <CalendarComponent
-              mode="single"
-              selected={task.dueDate ? new Date(task.dueDate) : undefined}
-              onSelect={handleDueDateChange}
-              initialFocus
-            />
-          </PopoverContent>
-        </Popover>
-
-        {/* Priority */}
-        <Select value={task.priority} onValueChange={handlePriorityChange}>
-          <SelectTrigger 
-            className="h-6 text-[10px] justify-start px-1.5"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div 
-              className="h-2 w-2 rounded-full mr-1.5" 
-              style={{ backgroundColor: priorityInfo.color }} 
-            />
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {Object.entries(priorityConfig).map(([key, config]) => (
-              <SelectItem key={key} value={key}>
-                <div className="flex items-center gap-2">
-                  {config.label}
-                </div>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        {/* Actual Start */}
-        <Popover>
-          <PopoverTrigger asChild onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-1 rounded px-1.5 py-1 cursor-pointer hover:bg-muted text-green-600">
-              <Play className="h-3 w-3" />
-              <span className="truncate">
-                {task.actualStart ? format(new Date(task.actualStart), "MMM d") : "Start"}
-              </span>
-            </div>
-          </PopoverTrigger>
-          <PopoverContent className="w-auto p-0" align="start">
-            <CalendarComponent
-              mode="single"
-              selected={task.actualStart ? new Date(task.actualStart) : undefined}
-              onSelect={handleActualStartChange}
-              initialFocus
-            />
-          </PopoverContent>
-        </Popover>
-
-        {/* Actual Finish */}
-        <Popover>
-          <PopoverTrigger asChild onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-1 rounded px-1.5 py-1 cursor-pointer hover:bg-muted text-green-600">
-              <Square className="h-3 w-3" />
-              <span className="truncate">
-                {task.actualFinish ? format(new Date(task.actualFinish), "MMM d") : "Finish"}
-              </span>
-            </div>
-          </PopoverTrigger>
-          <PopoverContent className="w-auto p-0" align="start">
-            <CalendarComponent
-              mode="single"
-              selected={task.actualFinish ? new Date(task.actualFinish) : undefined}
-              onSelect={handleActualFinishChange}
-              initialFocus
-            />
-          </PopoverContent>
-        </Popover>
-      </div>
-
-      {/* Bottom Row */}
-      <div className="flex items-center justify-between">
-        {/* Story Points */}
-        {task.storyPoints && (
-          <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-medium">
-            {task.storyPoints} SP
-          </Badge>
+    <TooltipProvider delayDuration={300}>
+      <div
+        onClick={onClick}
+        className={cn(
+          "group relative cursor-pointer overflow-hidden rounded-xl border bg-card shadow-sm transition-all duration-200",
+          "hover:-translate-y-0.5 hover:shadow-lg hover:border-primary/40",
+          isSelected && "ring-2 ring-primary ring-offset-1 border-primary shadow-md",
+          isCompleted && "bg-gradient-to-br from-green-50/60 to-card border-green-200/60",
+          isTracking && "ring-1 ring-red-400/50"
         )}
+      >
+        {/* Colored top accent */}
+        <div
+          className="absolute inset-x-0 top-0 h-1"
+          style={{ backgroundColor: currentStatus?.color || priorityInfo.color }}
+        />
 
-        {/* Time Spent & Timer */}
-        {(task.timeSpent || 0) > 0 || isTracking ? (
-          <div className="flex items-center gap-1 text-[10px]">
-            {isTracking && (
-              <span className="flex items-center gap-1 text-red-500 font-medium">
-                <Timer className="h-3 w-3 animate-pulse" />
-                {formatElapsed(elapsedSeconds)}
-              </span>
-            )}
-            {!isTracking && (
-              <div className="flex items-center gap-1 text-muted-foreground">
-                <Clock className="h-3 w-3" />
-                {formatTimeSpent(localTimeSpent)}
-              </div>
-            )}
-          </div>
-        ) : null}
-
-        {/* Timer Button */}
-        {canTimer && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className={cn("h-6 w-6", isTracking && "text-red-500")}
-            onClick={(e) => { e.stopPropagation(); toggleTimer(); }}
-          >
-            {isTracking ? (
-              <Square className="h-3 w-3 fill-current" />
-            ) : (
-              <Play className="h-3 w-3" />
-            )}
-          </Button>
-        )}
-
-        {/* Comments */}
-        {task.comments.length > 0 && (
-          <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-            <MessageSquare className="h-3 w-3" />
-            {task.comments.length}
-          </div>
-        )}
-
-        {/* Assignees */}
-        <div className="flex -space-x-1">
-          {task.assigneeIds.slice(0, 2).map((id) => {
-            const emp = getCachedEmployee(id);
-            return (
-              <Avatar key={id} className="h-5 w-5 border-2 border-background">
-                <AvatarImage src={emp?.avatar ?? undefined} />
-                <AvatarFallback className="text-[8px]">
-                  {emp?.name ? emp.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() : id.charAt(0)}
-                </AvatarFallback>
-              </Avatar>
-            );
-          })}
-          {task.assigneeIds.length > 2 && (
-            <div className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-background bg-muted text-[8px]">
-              +{task.assigneeIds.length - 2}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Tags */}
-      {task.tags.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1">
-          {task.tags.slice(0, 3).map((tagName) => (
-            <Badge
-              key={tagName}
-              variant="secondary"
-              className="h-4 px-1.5 text-[9px]"
-            >
-              {tagName}
-            </Badge>
-          ))}
-          {task.tags.length > 3 && (
-            <span className="text-[9px] text-muted-foreground">
-              +{task.tags.length - 3}
+        {/* Tracking pulse indicator */}
+        {isTracking && (
+          <div className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-red-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-red-600">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-red-500" />
             </span>
+            LIVE
+          </div>
+        )}
+
+        <div className="p-3 pt-3.5">
+          {/* Header: Status + Menu */}
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <Select value={task.statusId} onValueChange={handleStatusChange}>
+              <SelectTrigger
+                className="h-6 w-fit gap-1 border-0 px-2 text-[10px] font-semibold uppercase tracking-wide shadow-none hover:opacity-80 focus:ring-0"
+                style={{
+                  backgroundColor: `${currentStatus?.color}18`,
+                  color: currentStatus?.color,
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {statuses.map((status) => (
+                  <SelectItem key={status.id} value={status.id} className="text-xs">
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="h-2 w-2 rounded-full"
+                        style={{ backgroundColor: status.color }}
+                      />
+                      {status.name}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 opacity-0 transition-opacity group-hover:opacity-100"
+                >
+                  <MoreHorizontal className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuItem onClick={() => router.push(`/task/${task.id}`)}>
+                  Open in full page
+                </DropdownMenuItem>
+                {onUpdate && (
+                  <DropdownMenuItem
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleProgressChange(100);
+                    }}
+                  >
+                    <CheckCircle2 className="mr-2 h-3.5 w-3.5" />
+                    Mark as Complete
+                  </DropdownMenuItem>
+                )}
+                {onDelete && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      className="text-destructive"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDelete(task.id);
+                      }}
+                    >
+                      Delete
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          {/* Title */}
+          <h4
+            className={cn(
+              "mb-2 line-clamp-2 text-sm font-semibold leading-snug",
+              isCompleted && "text-muted-foreground line-through decoration-1"
+            )}
+          >
+            {task.title}
+          </h4>
+
+          {/* Progress */}
+          {task.estimateProgress !== undefined && task.estimateProgress > 0 && (
+            <div className="mb-2.5">
+              <div className="mb-1 flex items-center justify-between text-[10px]">
+                <span className="text-muted-foreground">Progress</span>
+                <span
+                  className={cn(
+                    "font-semibold",
+                    isCompleted ? "text-green-600" : "text-foreground"
+                  )}
+                >
+                  {task.estimateProgress}%
+                </span>
+              </div>
+              <Progress
+                value={task.estimateProgress}
+                className={cn("h-1.5", isCompleted && "[&>div]:bg-green-500")}
+              />
+            </div>
           )}
+
+          {/* Meta chips: Priority + Due */}
+          <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            {/* Priority */}
+            <Select value={task.priority} onValueChange={handlePriorityChange}>
+              <SelectTrigger
+                className="h-6 w-fit gap-1 border px-1.5 text-[10px] font-medium shadow-none hover:bg-muted focus:ring-0"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* <Flag
+                  className="h-2.5 w-2.5"
+                  style={{ color: priorityInfo.color, fill: priorityInfo.color }}
+                /> */}
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(priorityConfig).map(([key, config]) => (
+                  <SelectItem key={key} value={key}>
+                    <div className="flex items-center gap-2">
+                      <Flag
+                        className="h-3 w-3"
+                        style={{ color: config.color, fill: config.color }}
+                      />
+                      {config.label}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {/* Due date */}
+            <Popover>
+              <PopoverTrigger asChild onClick={(e) => e.stopPropagation()}>
+                <button
+                  className={cn(
+                    "inline-flex h-6 items-center gap-1 rounded-md border px-1.5 text-[10px] font-medium transition-colors hover:bg-muted",
+                    isOverdue &&
+                      "border-red-300 bg-red-50 text-red-700 hover:bg-red-100",
+                    isDueSoon &&
+                      !isOverdue &&
+                      "border-amber-300 bg-amber-50 text-amber-700"
+                  )}
+                >
+                  {isOverdue ? (
+                    <AlertCircle className="h-2.5 w-2.5" />
+                  ) : (
+                    <Calendar className="h-2.5 w-2.5" />
+                  )}
+                  <span>
+                    {task.dueDate ? format(new Date(task.dueDate), "MMM d") : "Set due"}
+                  </span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <CalendarComponent
+                  mode="single"
+                  selected={task.dueDate ? new Date(task.dueDate) : undefined}
+                  onSelect={handleDueDateChange}
+                  initialFocus
+                />
+              </PopoverContent>
+            </Popover>
+
+            {/* Actual Start */}
+            <Popover>
+              <PopoverTrigger asChild onClick={(e) => e.stopPropagation()}>
+                <button
+                  className={cn(
+                    "inline-flex h-6 items-center gap-1 rounded-md border px-1.5 text-[10px] font-medium transition-colors hover:bg-muted",
+                    task.actualStart && "border-green-200 bg-green-50 text-green-700"
+                  )}
+                >
+                  <Play className="h-2.5 w-2.5" />
+                  <span>
+                    {task.actualStart
+                      ? format(new Date(task.actualStart), "MMM d")
+                      : "Start"}
+                  </span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <CalendarComponent
+                  mode="single"
+                  selected={task.actualStart ? new Date(task.actualStart) : undefined}
+                  onSelect={handleActualStartChange}
+                  initialFocus
+                />
+              </PopoverContent>
+            </Popover>
+
+            {/* Actual Finish */}
+            <Popover>
+              <PopoverTrigger asChild onClick={(e) => e.stopPropagation()}>
+                <button
+                  className={cn(
+                    "inline-flex h-6 items-center gap-1 rounded-md border px-1.5 text-[10px] font-medium transition-colors hover:bg-muted",
+                    task.actualFinish && "border-green-200 bg-green-50 text-green-700"
+                  )}
+                >
+                  <CheckCircle2 className="h-2.5 w-2.5" />
+                  <span>
+                    {task.actualFinish
+                      ? format(new Date(task.actualFinish), "MMM d")
+                      : "Finish"}
+                  </span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <CalendarComponent
+                  mode="single"
+                  selected={task.actualFinish ? new Date(task.actualFinish) : undefined}
+                  onSelect={handleActualFinishChange}
+                  initialFocus
+                />
+              </PopoverContent>
+            </Popover>
+          </div>
+
+          {/* Tags */}
+          {task.tags.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1">
+              {task.tags.slice(0, 3).map((tagName) => (
+                <Badge
+                  key={tagName}
+                  variant="secondary"
+                  className="h-4 rounded px-1.5 text-[9px] font-normal"
+                >
+                  {tagName}
+                </Badge>
+              ))}
+              {task.tags.length > 3 && (
+                <span className="text-[9px] text-muted-foreground">
+                  +{task.tags.length - 3}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Footer */}
+          <div className="mt-2 flex items-center justify-between border-t pt-2">
+            {/* Left: stats */}
+            <div className="flex items-center gap-2.5 text-[10px] text-muted-foreground">
+              {task.storyPoints ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-md bg-primary/10 px-1.5 text-[10px] font-semibold text-primary">
+                      {task.storyPoints}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>Story points</TooltipContent>
+                </Tooltip>
+              ) : null}
+
+              {isTracking ? (
+                <span className="inline-flex items-center gap-1 font-semibold text-red-600">
+                  <Timer className="h-3 w-3 animate-pulse" />
+                  {formatElapsed(elapsedSeconds)}
+                </span>
+              ) : localTimeSpent > 0 ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      {formatTimeSpent(localTimeSpent)}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>Time spent</TooltipContent>
+                </Tooltip>
+              ) : null}
+
+              {task.comments.length > 0 && (
+                <span className="inline-flex items-center gap-1">
+                  <MessageSquare className="h-3 w-3" />
+                  {task.comments.length}
+                </span>
+              )}
+
+              {(task as any).attachments?.length > 0 && (
+                <span className="inline-flex items-center gap-1">
+                  <Paperclip className="h-3 w-3" />
+                  {(task as any).attachments.length}
+                </span>
+              )}
+            </div>
+
+            {/* Right: timer + assignees */}
+            <div className="flex items-center gap-1.5">
+              {canTimer && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant={isTracking ? "default" : "ghost"}
+                      size="icon"
+                      className={cn(
+                        "h-6 w-6 rounded-full transition-all",
+                        isTracking
+                          ? "bg-red-500 text-white hover:bg-red-600"
+                          : "opacity-60 hover:opacity-100"
+                      )}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleTimer();
+                      }}
+                    >
+                      {isTracking ? (
+                        <Square className="h-3 w-3 fill-current" />
+                      ) : (
+                        <Play className="h-3 w-3 fill-current" />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {isTracking ? "Stop timer" : "Start timer"}
+                  </TooltipContent>
+                </Tooltip>
+              )}
+
+              <div className="flex -space-x-1.5">
+                {task.assigneeIds.slice(0, 3).map((id) => {
+                  const emp = getCachedEmployee(id);
+                  return (
+                    <Tooltip key={id}>
+                      <TooltipTrigger asChild>
+                        <Avatar className="h-6 w-6 border-2 border-background ring-0 transition-transform hover:z-10 hover:scale-110">
+                          <AvatarImage src={emp?.avatar ?? undefined} />
+                          <AvatarFallback className="bg-gradient-to-br from-primary/20 to-primary/10 text-[9px] font-semibold">
+                            {emp?.name
+                              ? emp.name
+                                  .split(" ")
+                                  .map((n) => n[0])
+                                  .join("")
+                                  .slice(0, 2)
+                                  .toUpperCase()
+                              : id.charAt(0).toUpperCase()}
+                          </AvatarFallback>
+                        </Avatar>
+                      </TooltipTrigger>
+                      <TooltipContent>{emp?.name || "Unassigned"}</TooltipContent>
+                    </Tooltip>
+                  );
+                })}
+                {task.assigneeIds.length > 3 && (
+                  <div className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-background bg-muted text-[9px] font-semibold text-muted-foreground">
+                    +{task.assigneeIds.length - 3}
+                  </div>
+                )}
+                {task.assigneeIds.length === 0 && (
+                  <div className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-dashed border-muted-foreground/30 text-[9px] text-muted-foreground">
+                    ?
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
-      )}
-    </div>
+      </div>
+    </TooltipProvider>
   );
 }

@@ -157,21 +157,25 @@ export interface Task {
 // Helper function to calculate Plan Finish from Plan Start + Duration
 export function calculatePlanFinish(planStart: Date | undefined, duration: number | undefined): Date | undefined {
   if (!planStart || !duration) return undefined;
+  // duration = number of working days (inclusive). Finish = start + (duration - 1).
   const planFinish = new Date(planStart);
-  planFinish.setDate(planFinish.getDate() + duration);
+  planFinish.setDate(planFinish.getDate() + Math.max(0, duration - 1));
   return planFinish;
 }
 
-// Helper function to calculate Plan Progress: ((Today - Start) / (End - Start)) * 100
+// Plan Progress: inclusive-day basis. Span = (last day - start day + 1).
+// Day-of-start counts as 1 day elapsed → 1/span. Last day → span/span = 100%.
+// Example: 16→20 (5 days) ⇒ day16=20%, day17=40%, day20=100%.
 export function calculatePlanProgress(planStart: Date | undefined, planFinish: Date | undefined): number {
   if (!planStart || !planFinish) return 0;
-  const today = new Date();
-  const start = new Date(planStart);
-  const end = new Date(planFinish);
-  const totalDays = Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
-  if (totalDays <= 0) return 0;
-  const daysPassed = Math.floor((today.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
-  const progress = (daysPassed / totalDays) * 100;
+  const MS = 1000 * 60 * 60 * 24;
+  const startDay = new Date(planStart); startDay.setHours(0, 0, 0, 0);
+  const endDay = new Date(planFinish); endDay.setHours(0, 0, 0, 0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const spanDays = Math.round((endDay.getTime() - startDay.getTime()) / MS) + 1;
+  if (spanDays <= 0) return 0;
+  const elapsed = Math.floor((today.getTime() - startDay.getTime()) / MS) + 1;
+  const progress = (elapsed / spanDays) * 100;
   return Math.min(100, Math.max(0, progress));
 }
 

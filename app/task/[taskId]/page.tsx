@@ -281,7 +281,11 @@ export default function TaskViewPage() {
   const planStartStr = task.planStart || (task as any).plan_start;
   const planStart = planStartStr ? new Date(planStartStr) : null;
   const planFinishStr = task.planFinish || (task as any).plan_finish;
-  const planFinish = planFinishStr ? new Date(planFinishStr) : null;
+  const durationDays = task.durationDays ?? (task as any).duration_days ?? undefined;
+  // Prefer planStart + duration for consistency with list/table views.
+  const planFinish = planStart && durationDays
+    ? calculatePlanFinish(planStart, Number(durationDays)) ?? null
+    : (planFinishStr ? new Date(planFinishStr) : null);
   const planProgress = planStart && planFinish ? calculatePlanProgress(planStart, planFinish) : 0;
 
   // Handle snake_case from API

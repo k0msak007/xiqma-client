@@ -13,11 +13,21 @@ import {
   Bot,
   MessageSquare,
   CircleDot,
+  Target,
 } from "lucide-react";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useTranslation } from "@/lib/i18n";
+import { PermissionGate } from "@/components/permission-gate";
 
 export default function SettingsPage() {
+  return (
+    <PermissionGate requires={["manage_users"]}>
+      <SettingsPageInner />
+    </PermissionGate>
+  );
+}
+
+function SettingsPageInner() {
   const { t, language } = useTranslation();
 
   const settingsLinks = [
@@ -41,6 +51,15 @@ export default function SettingsPage() {
       title: t("settings.userManagement"),
       description: "Add users and assign roles with custom point ratios",
       color: "#8b5cf6",
+    },
+    {
+      href: "/settings/performance",
+      icon: Target,
+      title: language === "th" ? "Performance Config" : "Performance Config",
+      description: language === "th"
+        ? "กำหนด work schedule และ point target ต่อพนักงาน"
+        : "Set per-employee work schedule and point target",
+      color: "#0ea5e9",
     },
     {
       href: "/settings/task-types",

@@ -12,6 +12,8 @@ export interface PerformanceConfig {
   days_per_week: number;
   hours_per_day: number;
   hours_per_week: number;
+  /** ISO DOW: 1=Mon ... 7=Sun */
+  work_days: number[];
   work_start_time: string;
   work_end_time: string;
   expected_ratio: number;
@@ -37,6 +39,10 @@ export interface UpsertPerformanceConfigInput {
 // ─── API module ────────────────────────────────────────────────────────────────
 
 export const performanceConfigApi = {
+  /** GET /performance-config — รายการทั้งหมด (admin/manager) */
+  listAll: (): Promise<PerformanceConfig[]> =>
+    api.get<PerformanceConfig[]>("/performance-config"),
+
   /** GET /performance-config/me — ดู config ของตัวเอง */
   getMe: (): Promise<PerformanceConfig> =>
     api.get<PerformanceConfig>("/performance-config/me"),

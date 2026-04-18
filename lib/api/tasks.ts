@@ -191,6 +191,7 @@ export interface CalendarTaskRow {
   // joined
   status_name: string | null;
   status_color: string | null;
+  status_type: string | null;
   list_name: string | null;
   assignee_name: string;
   assignee_avatar: string | null;

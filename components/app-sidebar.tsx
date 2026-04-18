@@ -70,6 +70,7 @@ import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { SpaceMembersDialog } from "@/components/space-members-dialog";
 import { useAuthStore } from "@/lib/auth-store";
+import { usePermission } from "@/lib/use-permission";
 
 const spaceIcons: Record<string, React.ReactNode> = {
   Code: <Code className="h-4 w-4" />,
@@ -82,24 +83,38 @@ const spaceIcons: Record<string, React.ReactNode> = {
   Heart: <Heart className="h-4 w-4" />,
 };
 
-const mainNavItems = [
+type NavItem = {
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  href: string;
+  /** If set, user must have AT LEAST ONE of these permissions (admin always allowed) */
+  requires?: string[];
+};
+
+// Personal menus — always visible to any authenticated user
+const mainNavItems: NavItem[] = [
   { label: "Home", icon: Home, href: "/" },
   { label: "My Tasks", icon: CheckCircle2, href: "/my-tasks" },
   { label: "My Calendar", icon: Calendar, href: "/my-calendar" },
   { label: "Search", icon: Search, href: "/search" },
 ];
 
-const toolNavItems = [
-  { label: "Resources", icon: Calendar, href: "/resources" },
-  { label: "Time Sheet", icon: Clock, href: "/timesheet" },
-  { label: "Gantt Chart", icon: GanttChart, href: "/gantt" },
-  { label: "Analytics", icon: BarChart3, href: "/analytics" },
-  { label: "Settings", icon: Settings, href: "/settings" },
+const toolNavItems: NavItem[] = [
+  { label: "Resources", icon: Calendar, href: "/resources", requires: ["view_analytics", "manage_users"] },
+  { label: "Time Sheet", icon: Clock, href: "/timesheet", requires: ["view_tasks"] },
+  { label: "Gantt Chart", icon: GanttChart, href: "/gantt", requires: ["view_tasks"] },
+  { label: "Analytics", icon: BarChart3, href: "/analytics", requires: ["view_analytics"] },
+  { label: "Settings", icon: Settings, href: "/settings", requires: ["manage_users"] },
 ];
 
 export function AppSidebar() {
   const pathname = usePathname();
   const { user } = useAuthStore();
+  const { hasAny } = usePermission();
+
+  const canSee = (item: NavItem) => !item.requires || hasAny(item.requires);
+  const visibleMainItems = mainNavItems.filter(canSee);
+  const visibleToolItems = toolNavItems.filter(canSee);
 
   const {
     spaces,
@@ -177,7 +192,7 @@ export function AppSidebar() {
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              {mainNavItems.map((item) => (
+              {visibleMainItems.map((item) => (
                 <SidebarMenuItem key={item.label}>
                   <SidebarMenuButton asChild isActive={pathname === item.href}>
                     <Link href={item.href}>
@@ -540,7 +555,7 @@ export function AppSidebar() {
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {toolNavItems.map((item) => (
+              {visibleToolItems.map((item) => (
                 <SidebarMenuItem key={item.label}>
                   <SidebarMenuButton asChild isActive={pathname === item.href}>
                     <Link href={item.href}>
