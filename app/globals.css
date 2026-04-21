@@ -37,6 +37,14 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* CRM status colors */
+  --status-new: oklch(0.65 0.18 230);
+  --status-working: oklch(0.75 0.18 85);
+  --status-qualified: oklch(0.65 0.18 145);
+  --status-unqualified: oklch(0.5 0 0);
+  --status-won: oklch(0.65 0.18 145);
+  --status-lost: oklch(0.6 0.2 25);
 }
 
 .dark {
@@ -113,6 +121,12 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-status-new: var(--status-new);
+  --color-status-working: var(--status-working);
+  --color-status-qualified: var(--status-qualified);
+  --color-status-unqualified: var(--status-unqualified);
+  --color-status-won: var(--status-won);
+  --color-status-lost: var(--status-lost);
 }
 
 @layer base {

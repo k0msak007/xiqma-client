@@ -23,6 +23,8 @@ import {
   Activity,
   UserX,
   Gauge,
+  BarChart3,
+  CalendarDays,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -35,7 +37,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
   TooltipContent,
@@ -53,6 +54,7 @@ import { toast } from "sonner";
 import { PermissionGate } from "@/components/permission-gate";
 
 type ViewMode = "week" | "2weeks" | "month";
+type LayoutMode = "gantt" | "calendar";
 
 // Defaults when employee has no performance config
 const DEFAULT_HOURS_PER_DAY = 8;
@@ -83,10 +85,17 @@ function ResourcesPageInner() {
   const [isLoading, setIsLoading]         = useState(true);
   const [currentDate, setCurrentDate]     = useState(new Date());
   const [viewMode, setViewMode]           = useState<ViewMode>("2weeks");
+  const [layoutMode, setLayoutMode]       = useState<LayoutMode>("gantt");
   const [selectedUserId, setSelectedUserId] = useState<string>("all");
 
   // ─── Date range ───────────────────────────────────────────────────────────
   const dateRange = useMemo(() => {
+    if (layoutMode === "calendar") {
+      return {
+        start: startOfWeek(startOfMonth(currentDate), { weekStartsOn: 1 }),
+        end:   endOfWeek(endOfMonth(currentDate),     { weekStartsOn: 1 }),
+      };
+    }
     const start =
       viewMode === "month"
         ? startOfMonth(currentDate)
@@ -98,7 +107,7 @@ function ResourcesPageInner() {
           ? endOfWeek(addWeeks(currentDate, 1), { weekStartsOn: 1 })
           : endOfWeek(currentDate, { weekStartsOn: 1 });
     return { start, end };
-  }, [currentDate, viewMode]);
+  }, [currentDate, viewMode, layoutMode]);
 
   const days = useMemo(
     () => eachDayOfInterval({ start: dateRange.start, end: dateRange.end }),
@@ -113,7 +122,7 @@ function ResourcesPageInner() {
       const endStr   = format(dateRange.end,   "yyyy-MM-dd");
 
       const [empRes, taskRes, cfgRes] = await Promise.allSettled([
-        employeesApi.listAll(),
+        employeesApi.list({ limit: 500 }),
         tasksApi.calendar(startStr, endStr),
         performanceConfigApi.listAll(),
       ]);
@@ -287,16 +296,17 @@ function ResourcesPageInner() {
   };
 
   const navigate = (dir: "prev" | "next") => {
-    const amount = viewMode === "month" ? 1 : viewMode === "2weeks" ? 2 : 1;
+    const isMonthStep = layoutMode === "calendar" || viewMode === "month";
+    const amount = viewMode === "2weeks" ? 2 : 1;
     if (dir === "prev") {
       setCurrentDate(
-        viewMode === "month"
+        isMonthStep
           ? new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1)
           : subWeeks(currentDate, amount)
       );
     } else {
       setCurrentDate(
-        viewMode === "month"
+        isMonthStep
           ? new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1)
           : addWeeks(currentDate, amount)
       );
@@ -308,11 +318,15 @@ function ResourcesPageInner() {
     <TooltipProvider>
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="border-b px-6 py-4">
+      <div className="border-b px-6 py-4 bg-gradient-to-b from-muted/40 to-background">
         <div className="flex items-center gap-3">
-          <Calendar className="h-5 w-5 text-primary" />
-          <h1 className="text-xl font-semibold">Resources</h1>
-          <Badge variant="secondary" className="font-normal">Capacity & Gantt</Badge>
+          <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-primary/15 to-primary/5 flex items-center justify-center ring-1 ring-primary/10">
+            <Calendar className="h-4.5 w-4.5 text-primary" />
+          </div>
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">Resources</h1>
+            <p className="text-xs text-muted-foreground">Capacity planning · Gantt timeline</p>
+          </div>
         </div>
 
         {/* Toolbar */}
@@ -326,11 +340,33 @@ function ResourcesPageInner() {
               <ChevronRight className="h-4 w-4" />
             </Button>
             <span className="ml-2 font-medium">
-              {format(dateRange.start, "MMM d")} – {format(dateRange.end, "MMM d, yyyy")}
+              {layoutMode === "calendar"
+                ? format(currentDate, "MMMM yyyy")
+                : `${format(dateRange.start, "MMM d")} – ${format(dateRange.end, "MMM d, yyyy")}`}
             </span>
           </div>
 
           <div className="flex items-center gap-2">
+            <div className="flex items-center rounded-md border bg-background p-0.5">
+              <Button
+                variant={layoutMode === "gantt" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-7 px-2.5 gap-1.5"
+                onClick={() => setLayoutMode("gantt")}
+              >
+                <BarChart3 className="h-3.5 w-3.5" />
+                Gantt
+              </Button>
+              <Button
+                variant={layoutMode === "calendar" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-7 px-2.5 gap-1.5"
+                onClick={() => setLayoutMode("calendar")}
+              >
+                <CalendarDays className="h-3.5 w-3.5" />
+                Calendar
+              </Button>
+            </div>
             <Select value={selectedUserId} onValueChange={setSelectedUserId}>
               <SelectTrigger className="h-8 w-[180px]">
                 <Users className="mr-1.5 h-3.5 w-3.5" />
@@ -344,62 +380,64 @@ function ResourcesPageInner() {
               </SelectContent>
             </Select>
 
-            <Select value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
-              <SelectTrigger className="h-8 w-[130px]"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="week">1 Week</SelectItem>
-                <SelectItem value="2weeks">2 Weeks</SelectItem>
-                <SelectItem value="month">Month</SelectItem>
-              </SelectContent>
-            </Select>
+            {layoutMode === "gantt" && (
+              <Select value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
+                <SelectTrigger className="h-8 w-[130px]"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="week">1 Week</SelectItem>
+                  <SelectItem value="2weeks">2 Weeks</SelectItem>
+                  <SelectItem value="month">Month</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
           </div>
         </div>
 
         {/* Summary cards */}
         <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Card>
+          <Card className="overflow-hidden border-blue-500/20 bg-gradient-to-br from-blue-500/5 to-transparent hover:shadow-sm transition-shadow">
             <CardContent className="p-3 flex items-center gap-3">
-              <div className="h-9 w-9 rounded-lg bg-blue-500/10 flex items-center justify-center">
+              <div className="h-10 w-10 rounded-xl bg-blue-500/15 flex items-center justify-center ring-1 ring-blue-500/20">
                 <Activity className="h-4 w-4 text-blue-600" />
               </div>
               <div className="min-w-0">
-                <div className="text-xs text-muted-foreground">Total Tasks</div>
-                <div className="text-lg font-semibold">{summary.totalTasks}</div>
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Total Tasks</div>
+                <div className="text-xl font-semibold tabular-nums">{summary.totalTasks}</div>
               </div>
             </CardContent>
           </Card>
-          <Card>
+          <Card className="overflow-hidden border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 to-transparent hover:shadow-sm transition-shadow">
             <CardContent className="p-3 flex items-center gap-3">
-              <div className="h-9 w-9 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+              <div className="h-10 w-10 rounded-xl bg-emerald-500/15 flex items-center justify-center ring-1 ring-emerald-500/20">
                 <Gauge className="h-4 w-4 text-emerald-600" />
               </div>
               <div className="min-w-0">
-                <div className="text-xs text-muted-foreground">Avg Utilization</div>
-                <div className="text-lg font-semibold" style={{ color: utilizationColor(summary.avgUtil) }}>
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Avg Utilization</div>
+                <div className="text-xl font-semibold tabular-nums" style={{ color: utilizationColor(summary.avgUtil) }}>
                   {summary.avgUtil}%
                 </div>
               </div>
             </CardContent>
           </Card>
-          <Card>
+          <Card className="overflow-hidden border-red-500/20 bg-gradient-to-br from-red-500/5 to-transparent hover:shadow-sm transition-shadow">
             <CardContent className="p-3 flex items-center gap-3">
-              <div className="h-9 w-9 rounded-lg bg-red-500/10 flex items-center justify-center">
+              <div className="h-10 w-10 rounded-xl bg-red-500/15 flex items-center justify-center ring-1 ring-red-500/20">
                 <AlertTriangle className="h-4 w-4 text-red-600" />
               </div>
               <div className="min-w-0">
-                <div className="text-xs text-muted-foreground">Over-allocated</div>
-                <div className="text-lg font-semibold">{summary.overAllocated}</div>
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Over-allocated</div>
+                <div className="text-xl font-semibold tabular-nums">{summary.overAllocated}</div>
               </div>
             </CardContent>
           </Card>
-          <Card>
+          <Card className="overflow-hidden border-amber-500/20 bg-gradient-to-br from-amber-500/5 to-transparent hover:shadow-sm transition-shadow">
             <CardContent className="p-3 flex items-center gap-3">
-              <div className="h-9 w-9 rounded-lg bg-amber-500/10 flex items-center justify-center">
+              <div className="h-10 w-10 rounded-xl bg-amber-500/15 flex items-center justify-center ring-1 ring-amber-500/20">
                 <UserX className="h-4 w-4 text-amber-600" />
               </div>
               <div className="min-w-0">
-                <div className="text-xs text-muted-foreground">Unassigned</div>
-                <div className="text-lg font-semibold">{summary.unassignedTasks}</div>
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Unassigned</div>
+                <div className="text-xl font-semibold tabular-nums">{summary.unassignedTasks}</div>
               </div>
             </CardContent>
           </Card>
@@ -411,12 +449,20 @@ function ResourcesPageInner() {
         <div className="flex flex-1 items-center justify-center text-muted-foreground">
           Loading…
         </div>
+      ) : layoutMode === "calendar" ? (
+        <CalendarGrid
+          days={days}
+          tasks={tasks}
+          employees={filteredEmployees}
+          currentDate={currentDate}
+        />
       ) : (
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex-1 overflow-auto">
+          <div className="flex min-w-max">
           {/* User Column */}
-          <div className="w-[260px] shrink-0 border-r bg-muted/30">
-            <div className="h-16 border-b px-4 py-2 flex items-end">
-              <span className="text-sm font-medium text-muted-foreground">Team Member · Capacity</span>
+          <div className="w-[260px] shrink-0 border-r bg-muted/20 sticky left-0 z-20 backdrop-blur-sm">
+            <div className="h-16 border-b px-4 py-2 flex items-end sticky top-0 bg-muted/60 backdrop-blur z-10">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Team Member · Capacity</span>
             </div>
             {filteredEmployees.map((emp) => {
               const cap = capacityByEmployee[emp.id];
@@ -424,10 +470,10 @@ function ResourcesPageInner() {
               const color = utilizationColor(util);
               const hasConfig = configByEmployee.has(emp.id);
               return (
-                <div key={emp.id} className="flex items-center gap-3 border-b px-3 py-2 h-[80px]">
-                  <Avatar className="h-8 w-8 shrink-0">
+                <div key={emp.id} className="flex items-center gap-3 border-b px-3 py-2 h-[80px] bg-background/60 hover:bg-muted/40 transition-colors">
+                  <Avatar className="h-9 w-9 shrink-0 ring-2 ring-background shadow-sm">
                     <AvatarImage src={emp.avatarUrl ?? undefined} />
-                    <AvatarFallback>{emp.name.charAt(0)}</AvatarFallback>
+                    <AvatarFallback className="text-xs font-medium">{emp.name.charAt(0)}</AvatarFallback>
                   </Avatar>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
@@ -483,23 +529,29 @@ function ResourcesPageInner() {
           </div>
 
           {/* Timeline */}
-          <ScrollArea className="flex-1">
-            <div className="min-w-[800px]">
+          <div className="flex-1 min-w-[800px]">
               {/* Date Headers */}
-              <div className="flex h-16 border-b">
+              <div className="flex h-16 border-b sticky top-0 bg-background/95 backdrop-blur z-10">
                 {days.map((day, idx) => {
                   const weekend = isoDow(day) === 6 || isoDow(day) === 7;
+                  const today = isToday(day);
                   return (
                     <div
                       key={idx}
                       className={cn(
-                        "flex-1 flex flex-col items-center justify-center border-r text-center",
-                        weekend && "bg-muted/40",
-                        isToday(day) && "bg-primary/10"
+                        "flex-1 flex flex-col items-center justify-center border-r text-center gap-0.5",
+                        weekend && "bg-muted/30",
+                        today && "bg-primary/5"
                       )}
                     >
-                      <span className="text-xs text-muted-foreground">{format(day, "EEE")}</span>
-                      <span className={cn("text-sm font-medium", isToday(day) && "text-primary")}>
+                      <span className={cn(
+                        "text-[10px] uppercase tracking-wider font-medium",
+                        today ? "text-primary" : "text-muted-foreground"
+                      )}>{format(day, "EEE")}</span>
+                      <span className={cn(
+                        "text-sm font-semibold tabular-nums",
+                        today && "flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm"
+                      )}>
                         {format(day, "d")}
                       </span>
                     </div>
@@ -513,17 +565,18 @@ function ResourcesPageInner() {
                 const cfg = configByEmployee.get(emp.id);
                 const workDays = cfg?.work_days?.length ? cfg.work_days : DEFAULT_WORK_DAYS;
                 return (
-                  <div key={emp.id} className="relative flex h-[80px] border-b">
+                  <div key={emp.id} className="relative flex h-[80px] border-b hover:bg-muted/10 transition-colors">
                     {/* Grid lines + non-work-day shading */}
                     {days.map((day, idx) => {
                       const isWorkDay = workDays.includes(isoDow(day));
+                      const today = isToday(day);
                       return (
                         <div
                           key={idx}
                           className={cn(
-                            "flex-1 border-r",
-                            !isWorkDay && "bg-muted/30",
-                            isToday(day) && "bg-primary/5",
+                            "flex-1 border-r border-border/50",
+                            !isWorkDay && "bg-muted/20",
+                            today && "bg-primary/5 border-r-primary/20",
                           )}
                         />
                       );
@@ -542,12 +595,12 @@ function ResourcesPageInner() {
                           <Tooltip key={task.id}>
                             <TooltipTrigger asChild>
                               <div
-                                className="absolute h-6 rounded px-2 flex items-center gap-1 text-xs text-white truncate cursor-pointer hover:opacity-90 transition-opacity shadow-sm"
+                                className="absolute h-6 rounded-md px-2 flex items-center gap-1 text-xs text-white truncate cursor-pointer hover:brightness-110 hover:-translate-y-0.5 transition-all shadow-sm ring-1 ring-black/5"
                                 style={{
                                   left:            style.left,
                                   width:           style.width,
                                   top:             `${8 + idx * 24}px`,
-                                  backgroundColor: barColor,
+                                  backgroundImage: `linear-gradient(135deg, ${barColor}, ${barColor}dd)`,
                                 }}
                                 onClick={() => window.open(`/task/${task.id}`, "_blank")}
                               >
@@ -592,13 +645,13 @@ function ResourcesPageInner() {
                   No team members found
                 </div>
               )}
-            </div>
-          </ScrollArea>
+          </div>
+          </div>
         </div>
       )}
 
       {/* Legend */}
-      <div className="border-t px-6 py-3 bg-muted/30">
+      <div className="border-t px-6 py-3 bg-gradient-to-b from-muted/20 to-muted/40">
         <div className="flex items-center gap-6 flex-wrap">
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground">Utilization:</span>
@@ -640,5 +693,128 @@ function ResourcesPageInner() {
       </div>
     </div>
     </TooltipProvider>
+  );
+}
+
+// ─── Calendar Grid (month view, all-employees combined) ─────────────────────
+function CalendarGrid({
+  days,
+  tasks,
+  employees,
+  currentDate,
+}: {
+  days: Date[];
+  tasks: CalendarTaskRow[];
+  employees: Employee[];
+  currentDate: Date;
+}) {
+  const empById = useMemo(() => {
+    const m = new Map<string, Employee>();
+    employees.forEach((e) => m.set(e.id, e));
+    return m;
+  }, [employees]);
+
+  const tasksByDay = useMemo(() => {
+    const map = new Map<string, CalendarTaskRow[]>();
+    const empIds = new Set(employees.map((e) => e.id));
+    tasks.forEach((t) => {
+      if (!t.assignee_id || !empIds.has(t.assignee_id)) return;
+      const dateStr = t.plan_start ?? t.deadline;
+      if (!dateStr) return;
+      const key = format(new Date(dateStr), "yyyy-MM-dd");
+      const arr = map.get(key) ?? [];
+      arr.push(t);
+      map.set(key, arr);
+    });
+    return map;
+  }, [tasks, employees]);
+
+  const weekdayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const thisMonth = currentDate.getMonth();
+
+  return (
+    <div className="flex-1 overflow-auto">
+      <div className="grid grid-cols-7 border-b sticky top-0 bg-background/95 backdrop-blur z-10">
+        {weekdayLabels.map((w) => (
+          <div key={w} className="px-3 py-2 text-[10px] uppercase tracking-wider font-semibold text-muted-foreground text-center border-r last:border-r-0">
+            {w}
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7 auto-rows-fr min-h-full">
+        {days.map((day, idx) => {
+          const key = format(day, "yyyy-MM-dd");
+          const dayTasks = tasksByDay.get(key) ?? [];
+          const today = isToday(day);
+          const inMonth = day.getMonth() === thisMonth;
+          const weekend = isoDow(day) === 6 || isoDow(day) === 7;
+          return (
+            <div
+              key={idx}
+              className={cn(
+                "min-h-[120px] border-b border-r p-1.5 flex flex-col gap-1 transition-colors",
+                !inMonth && "bg-muted/30 text-muted-foreground/60",
+                inMonth && weekend && "bg-muted/10",
+                inMonth && !weekend && "bg-background hover:bg-muted/20",
+                today && "bg-primary/5 ring-1 ring-inset ring-primary/20",
+                (idx + 1) % 7 === 0 && "border-r-0",
+              )}
+            >
+              <div className="flex items-center justify-between px-1">
+                <span className={cn(
+                  "text-xs font-semibold tabular-nums",
+                  today && "flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground",
+                )}>
+                  {format(day, "d")}
+                </span>
+                {dayTasks.length > 0 && (
+                  <span className="text-[10px] text-muted-foreground font-medium">{dayTasks.length}</span>
+                )}
+              </div>
+              <div className="flex flex-col gap-0.5 overflow-hidden">
+                {dayTasks.slice(0, 4).map((t) => {
+                  const emp = t.assignee_id ? empById.get(t.assignee_id) : null;
+                  const color = t.status_color ?? "#6b7280";
+                  return (
+                    <Tooltip key={t.id}>
+                      <TooltipTrigger asChild>
+                        <div
+                          onClick={() => window.open(`/task/${t.id}`, "_blank")}
+                          className="group flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] cursor-pointer hover:brightness-110 transition-all ring-1 ring-black/5"
+                          style={{
+                            backgroundImage: `linear-gradient(135deg, ${color}, ${color}dd)`,
+                            color: "white",
+                          }}
+                        >
+                          {emp && (
+                            <Avatar className="h-3.5 w-3.5 shrink-0 ring-1 ring-white/40">
+                              <AvatarImage src={emp.avatarUrl ?? undefined} />
+                              <AvatarFallback className="text-[8px]">{emp.name.charAt(0)}</AvatarFallback>
+                            </Avatar>
+                          )}
+                          <span className="truncate font-medium">{t.title}</span>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <div className="text-xs space-y-0.5 max-w-[260px]">
+                          <div className="font-medium">{t.title}</div>
+                          {emp && <div>Owner: <b>{emp.name}</b></div>}
+                          <div>Status: <b>{t.status_name ?? t.status}</b></div>
+                          {t.list_name && <div>List: {t.list_name}</div>}
+                          <div>Priority: {t.priority}</div>
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
+                  );
+                })}
+                {dayTasks.length > 4 && (
+                  <div className="text-[10px] text-muted-foreground px-1">+{dayTasks.length - 4} more</div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }

@@ -286,10 +286,9 @@ export const useListTaskStore = create<ListTaskStore>((set, get) => ({
     try {
       const rows = await subtasksApi.list(taskId);
       const subtasks: Subtask[] = rows.map((r) => ({
-        id:         r.id,
-        title:      r.title,
-        completed:  r.isCompleted,
-        assigneeId: r.assigneeId ?? undefined,
+        id:        r.id,
+        title:     r.title,
+        completed: r.isDone,
       }));
       set((s) => ({
         tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, subtasks } : t)),
@@ -303,7 +302,7 @@ export const useListTaskStore = create<ListTaskStore>((set, get) => ({
       set((s) => ({
         tasks: s.tasks.map((t) =>
           t.id === taskId
-            ? { ...t, subtasks: t.subtasks.map((sub) => sub.id === subtaskId ? { ...sub, completed: updated.isCompleted } : sub) }
+            ? { ...t, subtasks: t.subtasks.map((sub) => sub.id === subtaskId ? { ...sub, completed: updated.isDone } : sub) }
             : t
         ),
       }));
@@ -315,7 +314,7 @@ export const useListTaskStore = create<ListTaskStore>((set, get) => ({
   addSubtask: async (taskId, title) => {
     try {
       const row = await subtasksApi.create(taskId, { title });
-      const newSub: Subtask = { id: row.id, title: row.title, completed: row.isCompleted };
+      const newSub: Subtask = { id: row.id, title: row.title, completed: row.isDone };
       set((s) => ({
         tasks: s.tasks.map((t) =>
           t.id === taskId ? { ...t, subtasks: [...t.subtasks.filter((sub) => !sub.id.startsWith("stub-")), newSub] } : t

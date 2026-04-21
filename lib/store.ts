@@ -59,6 +59,7 @@ interface TaskStore {
   addTaskType: (taskType: TaskType) => void;
   updateTaskType: (taskTypeId: string, updates: Partial<TaskType>) => void;
   deleteTaskType: (taskTypeId: string) => void;
+  setTaskTypes: (taskTypes: TaskType[]) => void;
   
   // Folder actions
   archiveFolder: (folderId: string) => void;
@@ -271,6 +272,8 @@ export const useTaskStore = create<TaskStore>((set) => ({
     set((state) => ({
       taskTypes: state.taskTypes.filter((tt) => tt.id !== taskTypeId),
     })),
+
+  setTaskTypes: (taskTypes) => set({ taskTypes }),
     
   // Folder actions
   archiveFolder: (folderId) =>

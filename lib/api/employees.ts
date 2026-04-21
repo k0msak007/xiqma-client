@@ -11,6 +11,7 @@ export interface Employee {
   isActive: boolean;
   roleName: string | null;
   positionName: string | null;
+  managerId: string | null;
   createdAt: string;
 }
 

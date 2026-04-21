@@ -52,6 +52,8 @@ import { useListTaskStore } from "@/lib/list-task-store";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 import { getCachedEmployee } from "@/lib/employee-cache";
 import { tasksApi, type ApiTaskDetail } from "@/lib/api/tasks";
+import { taskTypesApi } from "@/lib/api/task-types";
+import { listsApi } from "@/lib/api/lists";
 import { useAuthStore } from "@/lib/auth-store";
 import { toast } from "sonner";
 import type { ViewType, Priority } from "@/lib/types";
@@ -69,6 +71,7 @@ export default function ListPage({ params }: PageProps) {
   const urlTaskId = searchParams.get("task");
 
   const { navigation, setActiveView, setActiveTask } = useTaskStore();
+  const setTaskTypes = useTaskStore((s) => s.setTaskTypes);
   const { tasks, statuses, loading, loadListTasks } = useListTaskStore();
   const { lists } = useWorkspaceStore();
   const user = useAuthStore((s) => s.user);
@@ -94,6 +97,27 @@ export default function ListPage({ params }: PageProps) {
   useEffect(() => {
     loadListTasks(id);
   }, [id, loadListTasks]);
+
+  // โหลด task types จริงจาก API (ไม่งั้น store จะใช้ mock id "tasktype-1" ซึ่งไม่ใช่ UUID)
+  useEffect(() => {
+    taskTypesApi
+      .list()
+      .then((list) =>
+        setTaskTypes(
+          list.map((tt) => ({
+            id: tt.id,
+            name: tt.name,
+            description: tt.description ?? undefined,
+            color: tt.color,
+            category: tt.category,
+            countsForPoints: tt.countsForPoints,
+            fixedPoints: tt.fixedPoints ?? undefined,
+            createdAt: new Date(tt.createdAt),
+          })),
+        ),
+      )
+      .catch((e) => console.error("Failed to load task types:", e));
+  }, [setTaskTypes]);
 
   // Filter and sort tasks (already filtered for this listId by the store)
   const listTasks = useMemo(() => {
@@ -322,19 +346,26 @@ export default function ListPage({ params }: PageProps) {
   return (
     <div className="flex h-full">
       {/* Main Content */}
-      <div className="flex flex-1 flex-col">
+      <div className="flex flex-1 flex-col overflow-hidden">
         {/* Header */}
-        <div className="border-b px-6 py-4">
+        <div className="sticky top-0 z-20 shrink-0 relative border-b bg-gradient-to-br from-background via-background to-primary/5 px-6 py-5 shadow-sm backdrop-blur-sm supports-[backdrop-filter]:bg-background/80">
+          <div className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-primary/60 via-primary to-primary/60" />
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <h1 className="text-xl font-semibold">{list?.name ?? "Loading..."}</h1>
-              <Badge variant="secondary" className="font-normal">
+              <div className="h-9 w-1.5 rounded-full bg-gradient-to-b from-primary to-primary/40" />
+              <h1 className="bg-gradient-to-br from-foreground to-foreground/70 bg-clip-text text-2xl font-bold tracking-tight text-transparent">
+                {list?.name ?? "Loading..."}
+              </h1>
+              <Badge className="border-primary/20 bg-primary/10 font-medium text-primary hover:bg-primary/15">
                 {listTasks.length} tasks
               </Badge>
             </div>
 
             <div className="flex items-center gap-2">
-              <Button onClick={() => setShowAddTaskDialog(true)}>
+              <Button
+                onClick={() => setShowAddTaskDialog(true)}
+                className="bg-gradient-to-r from-primary to-primary/90 shadow-md shadow-primary/20 transition-all hover:shadow-lg hover:shadow-primary/30 hover:brightness-110"
+              >
                 <Plus className="mr-2 h-4 w-4" />
                 Add Task
               </Button>
@@ -358,7 +389,7 @@ export default function ListPage({ params }: PageProps) {
           </div>
 
           {/* Toolbar */}
-          <div className="mt-4 flex flex-wrap items-center gap-2">
+          <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border bg-card/50 p-2 shadow-sm backdrop-blur">
             {/* View Toggle */}
             <Tabs
               value={view}
@@ -535,7 +566,10 @@ export default function ListPage({ params }: PageProps) {
         <div className="flex-1 overflow-auto">
           {loading && tasks.length === 0 ? (
             <div className="flex h-full items-center justify-center">
-              <p className="text-muted-foreground">กำลังโหลด...</p>
+              <div className="flex items-center gap-3 rounded-full border bg-card px-5 py-2.5 shadow-sm">
+                <div className="h-2 w-2 animate-pulse rounded-full bg-primary" />
+                <p className="text-sm font-medium text-muted-foreground">กำลังโหลด...</p>
+              </div>
             </div>
           ) : view === "board" ? (
             <KanbanBoard
@@ -551,6 +585,20 @@ export default function ListPage({ params }: PageProps) {
               onAddStatus={() => setShowAddStatusDialog(true)}
               onUpdateTask={handleApiUpdate}
               onDeleteTask={handleTaskDelete}
+              onDeleteStatus={async (statusId) => {
+                try {
+                  await listsApi.deleteStatus(id, statusId);
+                  toast.success("ลบสถานะสำเร็จ");
+                  await loadListTasks(id);
+                } catch (err: any) {
+                  const code = err?.data?.error;
+                  if (code === "STATUS_IN_USE") {
+                    toast.error("ลบไม่ได้ — ยังมี task อยู่ในสถานะนี้");
+                  } else {
+                    toast.error(err?.data?.message || "ลบสถานะไม่สำเร็จ");
+                  }
+                }
+              }}
             />
           ) : (
             <div className="p-4">
@@ -560,16 +608,17 @@ export default function ListPage({ params }: PageProps) {
                     <div key={groupName}>
                       {groupBy !== "none" && (
                         <div className="mb-3 flex items-center gap-2">
-                          <h2 className="text-sm font-semibold">{groupName}</h2>
-                          <Badge variant="secondary" className="h-5 px-1.5 text-xs">
+                          <div className="h-5 w-1 rounded-full bg-gradient-to-b from-primary to-primary/40" />
+                          <h2 className="text-sm font-semibold tracking-tight">{groupName}</h2>
+                          <Badge className="h-5 border-primary/20 bg-primary/10 px-1.5 text-xs font-semibold text-primary">
                             {groupTasks.length}
                           </Badge>
                         </div>
                       )}
-                      <div className="rounded-lg border overflow-x-auto">
+                      <div className="overflow-x-auto rounded-xl border bg-card shadow-sm ring-1 ring-black/[0.02] transition-shadow hover:shadow-md">
                         <table className="w-full min-w-[1700px]">
-                          <thead className="bg-muted/50">
-                            <tr className="text-left text-xs font-medium text-muted-foreground">
+                          <thead className="bg-gradient-to-r from-muted/60 via-muted/40 to-muted/60">
+                            <tr className="text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                               <th className="p-2 w-[80px]">ID</th>
                               <th className="p-2 w-[200px]">Task</th>
                               <th className="p-2 w-[110px]">Status</th>
@@ -608,9 +657,18 @@ export default function ListPage({ params }: PageProps) {
                   ))}
                 </div>
               ) : (
-                <div className="flex flex-col items-center justify-center py-12">
-                  <p className="text-muted-foreground">No tasks found</p>
-                  <Button variant="outline" className="mt-4" onClick={() => setShowAddTaskDialog(true)}>
+                <div className="flex flex-col items-center justify-center py-20">
+                  <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 ring-1 ring-primary/10">
+                    <LayoutList className="h-8 w-8 text-primary/70" />
+                  </div>
+                  <p className="text-lg font-semibold">No tasks yet</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    เริ่มต้นงานแรกของคุณกันเถอะ
+                  </p>
+                  <Button
+                    className="mt-5 bg-gradient-to-r from-primary to-primary/90 shadow-md shadow-primary/20 transition-all hover:shadow-lg hover:shadow-primary/30 hover:brightness-110"
+                    onClick={() => setShowAddTaskDialog(true)}
+                  >
                     <Plus className="mr-2 h-4 w-4" />
                     Create your first task
                   </Button>

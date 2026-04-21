@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   Search,
   Plus,
@@ -29,7 +30,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import {
   AlertDialog,
@@ -41,14 +41,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { employeesApi, type Employee } from "@/lib/api/employees";
 import { attendanceApi, leaveApi, type LeaveRequest } from "@/lib/api/leave";
 import { useAuthStore } from "@/lib/auth-store";
@@ -67,21 +59,12 @@ export default function TeamPage() {
   const [employees, setEmployees]       = useState<Employee[]>([]);
   const [isLoading, setIsLoading]       = useState(true);
   const [searchQuery, setSearchQuery]   = useState("");
-  const [inviteOpen, setInviteOpen]     = useState(false);
   const [deactivateId, setDeactivateId] = useState<string | null>(null);
   const [teamAttendance, setTeamAttendance] = useState<Record<string, { checkIn: string | null; checkOut: string | null; status: string | null }>>({});
-  
+
   // Leave requests
   const [pendingLeaves, setPendingLeaves] = useState<LeaveRequest[]>([]);
   const [showLeaveDialog, setShowLeaveDialog] = useState(false);
-
-  // invite form
-  const [inviteName,  setInviteName]  = useState("");
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteCode,  setInviteCode]  = useState("");
-  const [inviteRole,  setInviteRole]  = useState<"employee" | "manager" | "hr" | "admin">("employee");
-  const [invitePass,  setInvitePass]  = useState("");
-  const [isSaving,    setIsSaving]    = useState(false);
 
   const canManageLeaves = user?.role === "admin" || user?.role === "manager" || user?.role === "hr";
 
@@ -93,7 +76,10 @@ export default function TeamPage() {
         attendanceApi.getTeamAttendance().catch(() => []),
       ]);
       
-      setEmployees(empRes as Employee[]);
+      const empList = Array.isArray(empRes)
+        ? (empRes as Employee[])
+        : ((empRes as unknown as { rows?: Employee[] })?.rows ?? []);
+      setEmployees(empList);
       
       const attMap: Record<string, { checkIn: string | null; checkOut: string | null; status: string | null }> = {};
       for (const emp of attRes as any[]) {
@@ -128,32 +114,6 @@ export default function TeamPage() {
         (e.department ?? "").toLowerCase().includes(q)
     );
   }, [employees, searchQuery]);
-
-  const handleInvite = async () => {
-    if (!inviteName.trim() || !inviteCode.trim() || !invitePass.trim()) {
-      toast.error("กรุณากรอกข้อมูลให้ครบ (ชื่อ, รหัสพนักงาน, รหัสผ่าน)");
-      return;
-    }
-    setIsSaving(true);
-    try {
-      await employeesApi.create({
-        name: inviteName.trim(),
-        email: inviteEmail.trim() || undefined,
-        employeeCode: inviteCode.trim(),
-        password: invitePass,
-        role: inviteRole,
-      });
-      toast.success("เพิ่มพนักงานสำเร็จ");
-      setInviteOpen(false);
-      setInviteName(""); setInviteEmail(""); setInviteCode(""); setInvitePass("");
-      await load();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "เพิ่มพนักงานไม่สำเร็จ";
-      toast.error(msg);
-    } finally {
-      setIsSaving(false);
-    }
-  };
 
   const handleDeactivate = async () => {
     if (!deactivateId) return;
@@ -198,70 +158,15 @@ export default function TeamPage() {
           </p>
         </div>
 
-        <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
-          <DialogTrigger asChild>
-            <Button>
+        {/* การสร้าง/แก้ไขพนักงานย้ายไปหน้า HR/Admin ที่ /settings/users */}
+        {canManageLeaves && (
+          <Link href="/settings/users">
+            <Button variant="outline">
               <Plus className="mr-2 h-4 w-4" />
-              Add Member
+              จัดการพนักงาน
             </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Add Team Member</DialogTitle>
-              <DialogDescription>Create a new employee account.</DialogDescription>
-            </DialogHeader>
-            <div className="grid gap-3 py-4">
-              <div className="grid gap-1.5">
-                <Label>Full Name *</Label>
-                <Input value={inviteName} onChange={(e) => setInviteName(e.target.value)} placeholder="สมชาย ใจดี" />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Employee Code *</Label>
-                <Input value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} placeholder="EMP001" />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Email</Label>
-                <Input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="somchai@company.com" />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Role</Label>
-                <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as typeof inviteRole)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="employee">Employee</SelectItem>
-                    <SelectItem value="manager">Manager</SelectItem>
-                    <SelectItem value="hr">HR</SelectItem>
-                    <SelectItem value="admin">Admin</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Password *</Label>
-                <div className="flex gap-2">
-                  <Input 
-                    type={invitePass ? "text" : "password"} 
-                    value={invitePass} 
-                    onChange={(e) => setInvitePass(e.target.value)} 
-                    placeholder="อย่างน้อย 8 ตัวอักษร" 
-                    className="flex-1" 
-                  />
-                  <Button type="button" variant="outline" size="sm" onClick={() => {
-                    const random = Math.random().toString(36).slice(-8);
-                    setInvitePass(random);
-                  }}>
-                    Random
-                  </Button>
-                </div>
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setInviteOpen(false)}>Cancel</Button>
-              <Button onClick={handleInvite} disabled={isSaving}>
-                {isSaving ? "Saving…" : "Add Member"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+          </Link>
+        )}
 
         {/* Pending Leave Requests Button */}
         {canManageLeaves && pendingLeaves.length > 0 && (

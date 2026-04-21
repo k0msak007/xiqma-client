@@ -7,7 +7,7 @@ import {
   Draggable,
   type DropResult,
 } from "@hello-pangea/dnd";
-import { Plus, MoreHorizontal } from "lucide-react";
+import { Plus, MoreHorizontal, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +33,7 @@ interface KanbanBoardProps {
   onAddStatus?: () => void;
   onUpdateTask?: (taskId: string, updates: Partial<Task>) => Promise<void>;
   onDeleteTask?: (taskId: string) => Promise<void>;
+  onDeleteStatus?: (statusId: string) => Promise<void>;
 }
 
 export function KanbanBoard({
@@ -45,6 +46,7 @@ export function KanbanBoard({
   onAddStatus,
   onUpdateTask,
   onDeleteTask,
+  onDeleteStatus,
 }: KanbanBoardProps) {
   const { updateTaskStatus, reorderTasks } = useListTaskStore();
   const taskRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -174,6 +176,25 @@ export function KanbanBoard({
                         <DropdownMenuItem>Rename</DropdownMenuItem>
                         <DropdownMenuItem>Set WIP Limit</DropdownMenuItem>
                         <DropdownMenuItem>Hide Column</DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="text-destructive focus:text-destructive"
+                          disabled={columnTasks.length > 0 || !onDeleteStatus}
+                          onSelect={(e) => {
+                            e.preventDefault();
+                            if (columnTasks.length > 0) return;
+                            if (
+                              typeof window !== "undefined" &&
+                              !window.confirm(`ลบสถานะ "${status.name}"?`)
+                            )
+                              return;
+                            onDeleteStatus?.(status.id);
+                          }}
+                        >
+                          <Trash2 className="mr-2 h-3.5 w-3.5" />
+                          {columnTasks.length > 0
+                            ? `ลบไม่ได้ (มี ${columnTasks.length} task)`
+                            : "ลบสถานะ"}
+                        </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>

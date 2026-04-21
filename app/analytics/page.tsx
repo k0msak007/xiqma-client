@@ -189,14 +189,6 @@ function PerformanceGauge({ value, label }: { value: number; label: string }) {
   );
 }
 
-const STANDARD_STATUSES = [
-  { id: "open",        name: "Open",        color: "#6b7280" },
-  { id: "in_progress", name: "In Progress", color: "#3b82f6" },
-  { id: "review",      name: "Review",      color: "#f59e0b" },
-  { id: "done",        name: "Done",        color: "#10b981" },
-  { id: "closed",      name: "Closed",      color: "#6366f1" },
-];
-
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 import { PermissionGate } from "@/components/permission-gate";
@@ -518,19 +510,14 @@ function AnalyticsPageInner() {
 
   // ── BOTTLENECK TAB ─────────────────────────────────────────────────────────
   const bottleneckData = useMemo(() => {
-    // Status aging from API
-    const statusAging =
-      bottleneckRows.length > 0
-        ? bottleneckRows.map((row) => ({
-            status:       row.status_name,
-            color:        row.color ?? "#6b7280",
-            taskCount:    Number(row.task_count),
-            avgDays:      Number(row.avg_days_stuck),
-            isBottleneck: Number(row.avg_days_stuck) > 5 && Number(row.task_count) > 3,
-          }))
-        : STANDARD_STATUSES.map((s) => ({ // fallback while loading
-            status: s.name, color: s.color, taskCount: 0, avgDays: 0, isBottleneck: false,
-          }));
+    // Status aging from API — empty array falls through to empty state in UI
+    const statusAging = bottleneckRows.map((row) => ({
+      status:       row.status_name,
+      color:        row.color ?? "#6b7280",
+      taskCount:    Number(row.task_count),
+      avgDays:      Number(row.avg_days_stuck),
+      isBottleneck: Number(row.avg_days_stuck) > 5 && Number(row.task_count) > 3,
+    }));
 
     // Workload balance from team workload API
     const workloadRows = teamWorkload.filter(
@@ -584,14 +571,44 @@ function AnalyticsPageInner() {
 
   // ── TASK TYPE ANALYSIS ─────────────────────────────────────────────────────
   const taskTypeAnalysis = useMemo(() => {
-    return taskTypes.map((tt) => ({
-      name:            tt.name,
-      color:           tt.color,
-      taskCount:       0,
-      points:          0,
-      countsForPoints: tt.countsForPoints,
-    }));
-  }, [taskTypes]);
+    const scoped = apiTasks.filter(
+      (t) => selectedUserId === "all" || t.assignee_id === selectedUserId,
+    );
+    const byType = new Map<string, { count: number; points: number }>();
+    let untypedCount = 0;
+    let untypedPoints = 0;
+    for (const t of scoped) {
+      const pts = Number(t.story_points ?? 0);
+      if (!t.task_type_id) {
+        untypedCount += 1;
+        untypedPoints += pts;
+        continue;
+      }
+      const prev = byType.get(t.task_type_id) ?? { count: 0, points: 0 };
+      byType.set(t.task_type_id, { count: prev.count + 1, points: prev.points + pts });
+    }
+
+    const rows = taskTypes.map((tt) => {
+      const agg = byType.get(tt.id) ?? { count: 0, points: 0 };
+      return {
+        name:            tt.name,
+        color:           tt.color,
+        taskCount:       agg.count,
+        points:          agg.points,
+        countsForPoints: tt.countsForPoints,
+      };
+    });
+    if (untypedCount > 0) {
+      rows.push({
+        name:            language === "th" ? "ไม่ระบุประเภท" : "Untyped",
+        color:           "#94a3b8",
+        taskCount:       untypedCount,
+        points:          untypedPoints,
+        countsForPoints: false,
+      });
+    }
+    return rows.sort((a, b) => b.taskCount - a.taskCount);
+  }, [apiTasks, taskTypes, selectedUserId, language]);
 
   // ── Loading state ──────────────────────────────────────────────────────────
   if (dataLoading) {
@@ -1346,7 +1363,7 @@ function AnalyticsPageInner() {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="opacity-60">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
                   {language === "th" ? "Rework Count" : "Rework Count"}
@@ -1354,14 +1371,14 @@ function AnalyticsPageInner() {
                 <RefreshCcw className="h-4 w-4 text-amber-500" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{qualityData.reworkCount}</div>
+                <div className="text-2xl font-bold text-muted-foreground">—</div>
                 <p className="text-xs text-muted-foreground">
-                  {language === "th" ? "งานที่ถูกตีกลับ" : "tasks sent back"}
+                  {language === "th" ? "ยังไม่มีข้อมูล (รอ backend)" : "Not tracked yet"}
                 </p>
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="opacity-60">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
                   {language === "th" ? "Rework Rate" : "Rework Rate"}
@@ -1369,8 +1386,10 @@ function AnalyticsPageInner() {
                 <AlertCircle className="h-4 w-4 text-red-500" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{qualityData.reworkRate}%</div>
-                <Progress value={qualityData.reworkRate} className="mt-2 h-1" />
+                <div className="text-2xl font-bold text-muted-foreground">—</div>
+                <p className="text-xs text-muted-foreground">
+                  {language === "th" ? "ยังไม่มีข้อมูล (รอ backend)" : "Not tracked yet"}
+                </p>
               </CardContent>
             </Card>
           </div>
@@ -1422,7 +1441,7 @@ function AnalyticsPageInner() {
                           }`}
                         />
                         <p className="text-xs text-muted-foreground mt-1">
-                          {user.completedTasks} tasks, {user.reworkRate}% rework
+                          {user.completedTasks} tasks
                         </p>
                       </div>
                     </div>

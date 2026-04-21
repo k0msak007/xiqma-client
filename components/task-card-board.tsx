@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { tasksApi } from "@/lib/api/tasks";
 import { useAuthStore } from "@/lib/auth-store";
+import { useTaskStore } from "@/lib/store";
 import {
   Select,
   SelectContent,
@@ -88,6 +89,8 @@ export function TaskCardBoard({
 }: TaskCardBoardProps) {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
+  const taskTypes = useTaskStore((s) => s.taskTypes);
+  const taskType = task.taskTypeId ? taskTypes.find((t) => t.id === task.taskTypeId) : null;
   const [localTimeSpent, setLocalTimeSpent] = useState(task.timeSpent || 0);
   const [runningTimer, setRunningTimer] = useState<{ id: string; startedAt: string } | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -333,8 +336,26 @@ export function TaskCardBoard({
             </div>
           )}
 
-          {/* Meta chips: Priority + Due */}
+          {/* Meta chips: Type + Priority + Due */}
           <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            {/* Task type */}
+            {taskType && (
+              <span
+                className="inline-flex h-6 items-center gap-1 rounded-md border px-1.5 text-[10px] font-medium"
+                style={{
+                  backgroundColor: `${taskType.color}14`,
+                  borderColor: `${taskType.color}40`,
+                  color: taskType.color,
+                }}
+              >
+                <span
+                  className="h-2 w-2 rounded-full"
+                  style={{ backgroundColor: taskType.color }}
+                />
+                <span className="truncate max-w-[80px]">{taskType.name}</span>
+              </span>
+            )}
+
             {/* Priority */}
             <Select value={task.priority} onValueChange={handlePriorityChange}>
               <SelectTrigger

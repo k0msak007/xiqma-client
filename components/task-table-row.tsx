@@ -137,7 +137,7 @@ export function TaskTableRow({ task, onClick, isSelected, statuses, onUpdate, on
   }, [showReassignDialog]);
   
   const status = statuses.find(s => s.id === task.statusId);
-  const taskType = task.taskTypeId ? getTaskTypeById(task.taskTypeId) : null;
+  const taskType = task.taskTypeId ? (taskTypes.find(tt => tt.id === task.taskTypeId) ?? getTaskTypeById(task.taskTypeId)) : null;
   const assignees = task.assigneeIds.map(id => getUserById(id)).filter(Boolean);
 
   // Calculate plan finish from plan start + duration

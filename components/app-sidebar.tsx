@@ -30,6 +30,10 @@ import {
   GanttChart,
   Loader2,
   Trash2,
+  UserCircle,
+  Package,
+  FileText,
+  Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkspaceStore } from "@/lib/workspace-store";
@@ -68,6 +72,7 @@ import { CreateFolderDialog } from "@/components/create-folder-dialog";
 import { CreateListDialog } from "@/components/create-list-dialog";
 import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import { LanguageSwitcher } from "@/components/language-switcher";
+import { NotificationsBell } from "@/components/notifications-bell";
 import { SpaceMembersDialog } from "@/components/space-members-dialog";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePermission } from "@/lib/use-permission";
@@ -99,12 +104,25 @@ const mainNavItems: NavItem[] = [
   { label: "Search", icon: Search, href: "/search" },
 ];
 
+// CRM sub-nav — visible only to users with `crm_view` (admin always sees all)
+const crmNavItems: NavItem[] = [
+  { label: "Dashboard",        icon: BarChart3,  href: "/crm/dashboard",     requires: ["crm_view"] },
+  { label: "Leads",            icon: Target,     href: "/crm/leads",         requires: ["crm_view"] },
+  { label: "Accounts",         icon: Briefcase,  href: "/crm/accounts",      requires: ["crm_view"] },
+  { label: "CRM Contacts",     icon: UserCircle, href: "/crm/contacts",      requires: ["crm_view"] },
+  { label: "Opportunities",    icon: Rocket,     href: "/crm/opportunities", requires: ["crm_view"] },
+  { label: "Quotations",       icon: FileText,   href: "/crm/quotations",    requires: ["crm_view"] },
+  { label: "Sales Activities", icon: Activity,   href: "/crm/activities",    requires: ["crm_view"] },
+  { label: "Products",         icon: Package,    href: "/crm/products",      requires: ["crm_view"] },
+  { label: "CRM Settings",     icon: Settings,   href: "/crm/settings",      requires: ["crm_admin"] },
+];
+
 const toolNavItems: NavItem[] = [
   { label: "Resources", icon: Calendar, href: "/resources", requires: ["view_analytics", "manage_users"] },
   { label: "Time Sheet", icon: Clock, href: "/timesheet", requires: ["view_tasks"] },
   { label: "Gantt Chart", icon: GanttChart, href: "/gantt", requires: ["view_tasks"] },
   { label: "Analytics", icon: BarChart3, href: "/analytics", requires: ["view_analytics"] },
-  { label: "Settings", icon: Settings, href: "/settings", requires: ["manage_users"] },
+  { label: "Settings", icon: Settings, href: "/settings", requires: ["manage_users", "manage_roles", "manage_workspace", "view_analytics"] },
 ];
 
 export function AppSidebar() {
@@ -115,6 +133,8 @@ export function AppSidebar() {
   const canSee = (item: NavItem) => !item.requires || hasAny(item.requires);
   const visibleMainItems = mainNavItems.filter(canSee);
   const visibleToolItems = toolNavItems.filter(canSee);
+  const visibleCrmItems = crmNavItems.filter(canSee);
+  const crmOpen = pathname.startsWith("/crm");
 
   const {
     spaces,
@@ -205,6 +225,39 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {/* CRM — collapsible, permission-gated */}
+        {visibleCrmItems.length > 0 && (
+          <SidebarGroup>
+            <Collapsible defaultOpen={crmOpen}>
+              <SidebarGroupLabel asChild>
+                <CollapsibleTrigger className="flex w-full items-center justify-between px-2 text-xs font-medium text-muted-foreground hover:text-foreground">
+                  <span className="flex items-center gap-2">
+                    <Target className="h-3.5 w-3.5" />
+                    CRM
+                  </span>
+                  <ChevronDown className="h-3 w-3 transition-transform group-data-[state=closed]/collapsible:-rotate-90" />
+                </CollapsibleTrigger>
+              </SidebarGroupLabel>
+              <CollapsibleContent>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {visibleCrmItems.map((item) => (
+                      <SidebarMenuItem key={item.label}>
+                        <SidebarMenuButton asChild isActive={pathname === item.href}>
+                          <Link href={item.href}>
+                            <item.icon className="h-4 w-4" />
+                            <span>{item.label}</span>
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    ))}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </CollapsibleContent>
+            </Collapsible>
+          </SidebarGroup>
+        )}
 
         {/* Spaces */}
         <SidebarGroup>
@@ -571,8 +624,9 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter className="border-t border-border/50 p-3 space-y-2">
-        <div className="flex justify-center">
+        <div className="flex items-center justify-center gap-2">
           <LanguageSwitcher />
+          <NotificationsBell />
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

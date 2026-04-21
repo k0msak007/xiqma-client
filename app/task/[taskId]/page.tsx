@@ -73,6 +73,8 @@ import {
 import { useTranslation } from "@/lib/i18n";
 import { tasksApi, type ApiTaskDetail } from "@/lib/api/tasks";
 import { commentsApi, type Comment as ApiComment } from "@/lib/api/comments";
+import { subtasksApi, type Subtask } from "@/lib/api/subtasks";
+import { toast } from "sonner";
 import { listsApi, type ListStatus } from "@/lib/api/lists";
 import { useAuthStore } from "@/lib/auth-store";
 
@@ -97,6 +99,10 @@ export default function TaskViewPage() {
 
   // Local state
   const [newComment, setNewComment] = useState("");
+  const [subtasks, setSubtasks] = useState<Subtask[]>([]);
+  const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
+  const [editingSubtaskId, setEditingSubtaskId] = useState<string | null>(null);
+  const [editingSubtaskTitle, setEditingSubtaskTitle] = useState("");
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingCommentContent, setEditingCommentContent] = useState("");
   const [estimateProgress, setEstimateProgress] = useState(0);
@@ -168,6 +174,68 @@ export default function TaskViewPage() {
         });
     }
   }, [taskId]);
+
+  // Load subtasks
+  useEffect(() => {
+    if (!taskId) return;
+    subtasksApi.list(taskId)
+      .then(setSubtasks)
+      .catch((err) => console.error("Failed to load subtasks:", err));
+  }, [taskId]);
+
+  const reloadSubtasks = async () => {
+    try { setSubtasks(await subtasksApi.list(taskId)); } catch { /* ignore */ }
+  };
+
+  const handleAddSubtask = async () => {
+    const title = newSubtaskTitle.trim();
+    if (!title) return;
+    try {
+      const row = await subtasksApi.create(taskId, { title });
+      setSubtasks((prev) => [...prev, row]);
+      setNewSubtaskTitle("");
+    } catch {
+      toast.error(language === "th" ? "เพิ่ม subtask ไม่สำเร็จ" : "Failed to add subtask");
+    }
+  };
+
+  const handleToggleSubtask = async (id: string) => {
+    try {
+      const updated = await subtasksApi.toggle(taskId, id);
+      setSubtasks((prev) => prev.map((s) => (s.id === id ? updated : s)));
+    } catch {
+      toast.error(language === "th" ? "อัปเดตไม่สำเร็จ" : "Failed to update");
+    }
+  };
+
+  const handleDeleteSubtask = async (id: string) => {
+    try {
+      await subtasksApi.delete(taskId, id);
+      setSubtasks((prev) => prev.filter((s) => s.id !== id));
+    } catch {
+      toast.error(language === "th" ? "ลบไม่สำเร็จ" : "Failed to delete");
+    }
+  };
+
+  const beginEditSubtask = (s: Subtask) => {
+    setEditingSubtaskId(s.id);
+    setEditingSubtaskTitle(s.title);
+  };
+
+  const saveEditSubtask = async () => {
+    if (!editingSubtaskId) return;
+    const title = editingSubtaskTitle.trim();
+    if (!title) { setEditingSubtaskId(null); return; }
+    try {
+      const updated = await subtasksApi.update(taskId, editingSubtaskId, { title });
+      setSubtasks((prev) => prev.map((s) => (s.id === editingSubtaskId ? updated : s)));
+      setEditingSubtaskId(null);
+      setEditingSubtaskTitle("");
+    } catch {
+      toast.error(language === "th" ? "แก้ไขไม่สำเร็จ" : "Failed to edit");
+    }
+    void reloadSubtasks;
+  };
 
   // Check for running timer
   useEffect(() => {
@@ -487,27 +555,100 @@ export default function TaskViewPage() {
             </CardContent>
           </Card>
 
-{/* Subtasks - API doesn't provide subtask details, show count only */}
-          {task.subtaskCount > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <CheckSquare className="h-4 w-4" />
-                  {language === "th" ? "Subtasks" : "Subtasks"}
-                  <Badge variant="secondary">
-                    {task.subtaskCount}
-                  </Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  {language === "th" 
-                    ? `มี ${task.subtaskCount} งานย่อย` 
-                    : `${task.subtaskCount} subtasks`}
+          {/* Subtasks — full CRUD */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <CheckSquare className="h-4 w-4" />
+                {language === "th" ? "งานย่อย" : "Subtasks"}
+                <Badge variant="secondary">
+                  {subtasks.filter((s) => s.isDone).length}/{subtasks.length}
+                </Badge>
+              </CardTitle>
+              {subtasks.length > 0 && (
+                <Progress
+                  value={(subtasks.filter((s) => s.isDone).length / subtasks.length) * 100}
+                  className="h-1.5 mt-2"
+                />
+              )}
+            </CardHeader>
+            <CardContent className="space-y-1.5">
+              {subtasks.length === 0 && (
+                <p className="text-xs text-muted-foreground italic pb-1">
+                  {language === "th" ? "ยังไม่มีงานย่อย" : "No subtasks yet"}
                 </p>
-              </CardContent>
-            </Card>
-          )}
+              )}
+              {subtasks.map((s) => (
+                <div
+                  key={s.id}
+                  className="group flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/60 transition-colors"
+                >
+                  <Checkbox
+                    checked={s.isDone}
+                    onCheckedChange={() => handleToggleSubtask(s.id)}
+                  />
+                  {editingSubtaskId === s.id ? (
+                    <Input
+                      autoFocus
+                      value={editingSubtaskTitle}
+                      onChange={(e) => setEditingSubtaskTitle(e.target.value)}
+                      onBlur={saveEditSubtask}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") saveEditSubtask();
+                        if (e.key === "Escape") { setEditingSubtaskId(null); setEditingSubtaskTitle(""); }
+                      }}
+                      className="h-7 text-sm flex-1"
+                    />
+                  ) : (
+                    <span
+                      onDoubleClick={() => beginEditSubtask(s)}
+                      className={cn(
+                        "text-sm flex-1 cursor-text select-none",
+                        s.isDone && "line-through text-muted-foreground",
+                      )}
+                      title={language === "th" ? "ดับเบิลคลิกเพื่อแก้ไข" : "Double-click to edit"}
+                    >
+                      {s.title}
+                    </span>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={() => beginEditSubtask(s)}
+                    title={language === "th" ? "แก้ไข" : "Edit"}
+                  >
+                    <Pencil className="h-3 w-3" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity text-destructive hover:text-destructive"
+                    onClick={() => handleDeleteSubtask(s.id)}
+                    title={language === "th" ? "ลบ" : "Delete"}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </div>
+              ))}
+              <div className="flex items-center gap-2 pt-2 border-t mt-2">
+                <Input
+                  value={newSubtaskTitle}
+                  onChange={(e) => setNewSubtaskTitle(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddSubtask(); }}
+                  placeholder={language === "th" ? "เพิ่มงานย่อย..." : "Add subtask..."}
+                  className="h-8 text-sm"
+                />
+                <Button
+                  size="sm"
+                  onClick={handleAddSubtask}
+                  disabled={!newSubtaskTitle.trim()}
+                >
+                  {language === "th" ? "เพิ่ม" : "Add"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
 
           {/* Comments Section */}
           <Card>

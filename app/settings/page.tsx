@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import {
-  Settings,
   Shield,
   Users,
   UserCog,
@@ -14,29 +13,45 @@ import {
   MessageSquare,
   CircleDot,
   Target,
+  History,
 } from "lucide-react";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useTranslation } from "@/lib/i18n";
 import { PermissionGate } from "@/components/permission-gate";
+import { usePermission } from "@/lib/use-permission";
+
+const SETTINGS_PAGE_REQUIRES = ["manage_users", "manage_roles", "manage_workspace", "view_analytics"];
 
 export default function SettingsPage() {
   return (
-    <PermissionGate requires={["manage_users"]}>
+    <PermissionGate requires={SETTINGS_PAGE_REQUIRES}>
       <SettingsPageInner />
     </PermissionGate>
   );
 }
 
+type Tile = {
+  href: string;
+  icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
+  title: string;
+  description: string;
+  color: string;
+  /** User must have ANY of these (admin always allowed) */
+  requires: string[];
+};
+
 function SettingsPageInner() {
   const { t, language } = useTranslation();
+  const { hasAny } = usePermission();
 
-  const settingsLinks = [
+  const tiles: Tile[] = [
     {
       href: "/team",
       icon: Users,
       title: t("nav.team"),
       description: "View and manage team members",
       color: "#3b82f6",
+      requires: ["manage_users"],
     },
     {
       href: "/settings/roles",
@@ -44,6 +59,7 @@ function SettingsPageInner() {
       title: t("settings.roleManagement"),
       description: "Create roles with permissions and point ratios",
       color: "#10b981",
+      requires: ["manage_roles"],
     },
     {
       href: "/settings/users",
@@ -51,15 +67,29 @@ function SettingsPageInner() {
       title: t("settings.userManagement"),
       description: "Add users and assign roles with custom point ratios",
       color: "#8b5cf6",
+      requires: ["manage_users"],
     },
     {
       href: "/settings/performance",
       icon: Target,
-      title: language === "th" ? "Performance Config" : "Performance Config",
-      description: language === "th"
-        ? "กำหนด work schedule และ point target ต่อพนักงาน"
-        : "Set per-employee work schedule and point target",
+      title: "Performance Config",
+      description:
+        language === "th"
+          ? "กำหนด work schedule และ point target ต่อพนักงาน"
+          : "Set per-employee work schedule and point target",
       color: "#0ea5e9",
+      requires: ["view_analytics", "manage_users"],
+    },
+    {
+      href: "/settings/holidays",
+      icon: Calendar,
+      title: language === "th" ? "ตั้งค่าวันหยุด" : "Holiday Settings",
+      description:
+        language === "th"
+          ? "กำหนดวันหยุดสุดสัปดาห์และวันหยุดพิเศษ"
+          : "Configure weekend days and special holidays",
+      color: "#ef4444",
+      requires: ["manage_users", "manage_workspace"],
     },
     {
       href: "/settings/task-types",
@@ -67,67 +97,76 @@ function SettingsPageInner() {
       title: t("settings.taskTypeMaster"),
       description: "Define task types and whether they count for points",
       color: "#f59e0b",
+      requires: ["manage_workspace"],
     },
     {
       href: "/settings/job-status",
       icon: CircleDot,
-      title: language === "th" ? "Job Status Master" : "Job Status Master",
-      description: language === "th" 
-        ? "จัดการสถานะของงาน เพิ่ม/แก้ไข/ลบ" 
-        : "Manage job statuses - add, edit, delete",
+      title: "Job Status Master",
+      description:
+        language === "th"
+          ? "จัดการสถานะของงาน เพิ่ม/แก้ไข/ลบ"
+          : "Manage job statuses - add, edit, delete",
       color: "#14b8a6",
-    },
-    {
-      href: "/settings/holidays",
-      icon: Calendar,
-      title: language === "th" ? "ตั้งค่าวันหยุด" : "Holiday Settings",
-      description: language === "th" 
-        ? "กำหนดวันหยุดสุดสัปดาห์และวันหยุดพิเศษ" 
-        : "Configure weekend days and special holidays",
-      color: "#ef4444",
+      requires: ["manage_workspace"],
     },
     {
       href: "/settings/organization",
       icon: Building2,
       title: language === "th" ? "โครงสร้างองค์กร" : "Organization Chart",
-      description: language === "th" 
-        ? "จัดการตำแหน่งและโครงสร้างบริษัท" 
-        : "Manage positions and company structure",
+      description:
+        language === "th"
+          ? "จัดการตำแหน่งและโครงสร้างบริษัท"
+          : "Manage positions and company structure",
       color: "#6366f1",
+      requires: ["manage_workspace"],
     },
     {
       href: "/settings/ai-automate",
       icon: Bot,
-      title: language === "th" ? "AI Automate Task" : "AI Automate Task",
-      description: language === "th" 
-        ? "ตั้งค่า Bot แจ้งเตือนและติดตามงาน" 
-        : "Configure bot alerts and task follow-ups",
+      title: "AI Automate Task",
+      description:
+        language === "th"
+          ? "ตั้งค่า Bot แจ้งเตือนและติดตามงาน"
+          : "Configure bot alerts and task follow-ups",
       color: "#ec4899",
+      requires: ["manage_workspace"],
     },
     {
       href: "/settings/ai-chatbot",
       icon: MessageSquare,
-      title: language === "th" ? "AI Chatbot Setup" : "AI Chatbot Setup",
-      description: language === "th" 
-        ? "ตั้งค่า API Token สำหรับ Line และ Chatbot อื่นๆ" 
-        : "Configure API tokens for Line and other chatbots",
+      title: "AI Chatbot Setup",
+      description:
+        language === "th"
+          ? "ตั้งค่า API Token สำหรับ Line และ Chatbot อื่นๆ"
+          : "Configure API tokens for Line and other chatbots",
       color: "#06b6d4",
+      requires: ["manage_workspace"],
+    },
+    {
+      href: "/settings/audit-logs",
+      icon: History,
+      title: "Audit Logs",
+      description:
+        language === "th"
+          ? "ดูบันทึกการกระทำทุกอย่างในระบบ (admin เท่านั้น)"
+          : "View all system actions for audit/debug (admin only)",
+      color: "#f59e0b",
+      requires: ["admin"],
     },
   ];
 
+  const visibleTiles = tiles.filter((t) => hasAny(t.requires));
+
   return (
     <div className="flex flex-col gap-6 p-6">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{t("settings.settings")}</h1>
-        <p className="text-muted-foreground">
-          {t("settings.teamManagement")}
-        </p>
+        <p className="text-muted-foreground">{t("settings.teamManagement")}</p>
       </div>
 
-      {/* Settings Grid */}
       <div className="grid gap-4 md:grid-cols-2">
-        {settingsLinks.map((item) => (
+        {visibleTiles.map((item) => (
           <Link key={item.href} href={item.href}>
             <Card className="cursor-pointer hover:border-primary transition-colors h-full">
               <CardHeader>
