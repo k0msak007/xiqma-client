@@ -78,7 +78,11 @@ export const employeesApi = {
     const qs = query.toString();
     return api.get<Employee[]>(`/employees${qs ? `?${qs}` : ""}`);
   },
-  listAll: () => api.get<Employee[]>("/employees/all"),
+  listAll: async (): Promise<Employee[]> => {
+    const res = await api.get<Employee[] | { rows: Employee[] }>("/employees/all");
+    if (Array.isArray(res)) return res;
+    return (res as { rows?: Employee[] })?.rows ?? [];
+  },
   get:        (id: string) => api.get<EmployeeDetail>(`/employees/${id}`),
   create:     (data: CreateEmployeePayload) => api.post<Employee>("/employees", data),
   update:     (id: string, data: UpdateEmployeePayload) => api.put<Employee>(`/employees/${id}`, data),

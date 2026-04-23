@@ -51,9 +51,12 @@ import { spacesApi } from "@/lib/api/spaces";
 import {
   priorityConfig,
   storyPointsOptions,
+  calculatePlanFinishWorkDays,
+  calculateDurationWorkDays,
   type Priority,
   type StoryPoints,
 } from "@/lib/types";
+import { performanceConfigApi } from "@/lib/api/performance-config";
 
 interface AddTaskDialogProps {
   open: boolean;
@@ -116,10 +119,8 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
         } catch (err) {
           console.error("Failed to load space members:", err);
           try {
-            const empRes = await employeesApi.list({ isActive: true, limit: 200 });
-            const empData = empRes as unknown as { rows?: { id: string; name: string; avatarUrl: string | null }[] };
-            const employeeList = Array.isArray(empRes) ? empRes : (empData.rows || []);
-            setEmployees(employeeList.map((e: { id: string; name: string; avatarUrl: string | null }) => ({ id: e.id, name: e.name, avatarUrl: e.avatarUrl })));
+            const empList = await employeesApi.listAll();
+            setEmployees(empList.map((e) => ({ id: e.id, name: e.name, avatarUrl: e.avatarUrl })));
           } catch (empErr) {
             console.error("Failed to load employees:", empErr);
             setEmployeesError(empErr instanceof Error ? empErr.message : "Failed to load employees");
@@ -150,13 +151,42 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
   // Get tasks in the same list for predecessor selection
   const listTasks = tasks.filter((t) => t.listId === listId);
 
-  // Calculate Plan Finish from Plan Start + Duration
-  const planFinish =
-    planStart && duration
-      ? new Date(
-          planStart.getTime() + parseInt(duration) * 24 * 60 * 60 * 1000
-        )
-      : undefined;
+  // Assignee work_days (ISO: 1=Mon..7=Sun). Default Mon-Fri.
+  const [assigneeWorkDays, setAssigneeWorkDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [planFinish, setPlanFinish] = useState<Date | undefined>(undefined);
+  const [lastEdited, setLastEdited] = useState<"duration" | "finish">("duration");
+
+  // Load work_days of first assignee when it changes
+  useEffect(() => {
+    const firstId = assigneeIds[0];
+    if (!firstId) { setAssigneeWorkDays([1, 2, 3, 4, 5]); return; }
+    performanceConfigApi.getByEmployee(firstId)
+      .then((cfg) => {
+        const wd = cfg?.work_days && cfg.work_days.length > 0 ? cfg.work_days : [1, 2, 3, 4, 5];
+        setAssigneeWorkDays(wd);
+      })
+      .catch(() => setAssigneeWorkDays([1, 2, 3, 4, 5]));
+  }, [assigneeIds]);
+
+  // Bidirectional sync — ใช้ guard กันลูปโดยเทียบค่าก่อน setState
+  useEffect(() => {
+    if (lastEdited === "duration") {
+      const d = duration ? parseInt(duration) : undefined;
+      const f = calculatePlanFinishWorkDays(planStart, d, assigneeWorkDays);
+      const prevTs = planFinish?.getTime();
+      const nextTs = f?.getTime();
+      if (prevTs !== nextTs) setPlanFinish(f);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planStart, duration, assigneeWorkDays, lastEdited]);
+
+  useEffect(() => {
+    if (lastEdited === "finish") {
+      const d = calculateDurationWorkDays(planStart, planFinish, assigneeWorkDays);
+      if (d !== undefined && String(d) !== duration) setDuration(String(d));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planStart, planFinish, assigneeWorkDays, lastEdited]);
 
   const resetForm = () => {
     setTitle("");
@@ -167,7 +197,9 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
     setAssigneeIds([]);
     setDueDate(undefined);
     setPlanStart(undefined);
+    setPlanFinish(undefined);
     setDuration("");
+    setLastEdited("duration");
     setActualStart(undefined);
     setActualFinish(undefined);
     setStoryPoints(undefined);
@@ -488,7 +520,7 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
                   type="number"
                   min="1"
                   value={duration}
-                  onChange={(e) => setDuration(e.target.value)}
+                  onChange={(e) => { setDuration(e.target.value); setLastEdited("duration"); }}
                   placeholder="0"
                 />
               </div>
@@ -520,15 +552,32 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
                 </Popover>
               </div>
 
-              {/* Plan Finish (calculated) */}
+              {/* Plan Finish (editable — นับเฉพาะวันทำงานของ assignee) */}
               <div className="space-y-2">
                 <Label>Plan Finish</Label>
-                <Input
-                  value={planFinish ? format(planFinish, "MMM d, yyyy") : "-"}
-                  readOnly
-                  className="bg-muted"
-                  placeholder="Auto-calculated"
-                />
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className={cn(
+                        "w-full justify-start text-left font-normal",
+                        !planFinish && "text-muted-foreground"
+                      )}
+                    >
+                      <CalendarIcon className="mr-2 h-4 w-4" />
+                      {planFinish ? format(planFinish, "MMM d") : "Select"}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="start">
+                    <Calendar
+                      mode="single"
+                      selected={planFinish}
+                      onSelect={(d) => { setPlanFinish(d); setLastEdited("finish"); }}
+                      disabled={(d) => planStart ? d < planStart : false}
+                      initialFocus
+                    />
+                  </PopoverContent>
+                </Popover>
               </div>
 
               {/* Due Date */}

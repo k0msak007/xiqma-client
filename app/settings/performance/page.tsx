@@ -231,7 +231,7 @@ export default function PerformanceConfigPage() {
                           <div>
                             <p className="font-medium">{emp.name}</p>
                             <p className="text-xs text-muted-foreground">
-                              {emp.role} · {emp.employeeCode}
+                              {typeof emp.role === "string" ? emp.role : (emp.role as any)?.name ?? "—"} · {emp.employeeCode}
                             </p>
                           </div>
                         </div>

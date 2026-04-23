@@ -42,6 +42,7 @@ import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
 import { employeesApi, type Employee } from "@/lib/api/employees";
 import { tasksApi, type CalendarTaskRow } from "@/lib/api/tasks";
+import { timeTrackingApi, type DailyTimeRow } from "@/lib/api/time-tracking";
 import { attendanceApi, leaveApi, type AttendanceLog, type LeaveQuota } from "@/lib/api/leave";
 import { useAuthStore } from "@/lib/auth-store";
 import { toast } from "sonner";
@@ -65,6 +66,7 @@ export default function TimeSheetPage() {
   const [currentDate, setCurrentDate]       = useState(new Date());
   const [employees, setEmployees]           = useState<Employee[]>([]);
   const [tasks, setTasks]                   = useState<CalendarTaskRow[]>([]);
+  const [dailyTime, setDailyTime]           = useState<DailyTimeRow[]>([]);
   const [isLoading, setIsLoading]           = useState(true);
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [expandedUsers, setExpandedUsers]   = useState<Set<string>>(new Set());
@@ -99,12 +101,14 @@ export default function TimeSheetPage() {
       try {
         const startStr = format(dates[0], "yyyy-MM-dd");
         const endStr   = format(dates[dates.length - 1], "yyyy-MM-dd");
-        const [empRes, taskRows] = await Promise.all([
+        const [empRes, taskRows, dailyRows] = await Promise.all([
           employeesApi.listAll(),
           tasksApi.calendar(startStr, endStr),
+          timeTrackingApi.daily(startStr, endStr).catch(() => [] as DailyTimeRow[]),
         ]);
         setEmployees(empRes.filter((e) => e.isActive));
         setTasks(taskRows);
+        setDailyTime(dailyRows);
       } catch {
         toast.error("โหลดข้อมูลไม่สำเร็จ");
       } finally {
@@ -191,12 +195,19 @@ export default function TimeSheetPage() {
     });
   };
 
+  // ใช้เวลา "จริง" จาก time_sessions ต่อวัน (กดเริ่ม/หยุดจริง) — ไม่เฉลี่ย
   const getHoursForUserOnDate = (userId: string, date: Date): number => {
-    const dayTasks = getTasksForUserOnDate(userId, date);
-    const totalMin = dayTasks.reduce((sum, t) => {
-      return sum + (t.accumulated_minutes || (t.time_estimate_hours ?? 0) * 60);
-    }, 0);
+    const dayStr = format(date, "yyyy-MM-dd");
+    const totalMin = dailyTime
+      .filter((r) => r.employeeId === userId && r.day === dayStr)
+      .reduce((s, r) => s + r.durationMin, 0);
     return totalMin / 60;
+  };
+
+  const getTaskHoursForUserOnDate = (userId: string, taskId: string, date: Date): number => {
+    const dayStr = format(date, "yyyy-MM-dd");
+    const row = dailyTime.find((r) => r.employeeId === userId && r.taskId === taskId && r.day === dayStr);
+    return row ? row.durationMin / 60 : 0;
   };
 
   const getTotalHoursForUser = (userId: string): number =>
@@ -451,45 +462,66 @@ export default function TimeSheetPage() {
                           </td>
                         </tr>
 
-                        {/* Expanded Task Rows */}
-                        {isExpanded && dates.map((date) => {
-                          const dayTasks = getTasksForUserOnDate(emp.id, date);
-                          if (dayTasks.length === 0) return null;
-                          return dayTasks.map((task) => (
-                            <tr key={`${emp.id}-${date.toISOString()}-${task.id}`} className="border-b bg-muted/10">
-                              <td className="sticky left-0 bg-muted/10 p-3 pl-14 z-10">
-                                <div className="flex items-center gap-2">
-                                  <Badge
-                                    variant="outline" className="text-[10px]"
-                                    style={{
-                                      borderColor: task.status_color ?? STATUS_COLORS[task.status] ?? "#6b7280",
-                                      color:       task.status_color ?? STATUS_COLORS[task.status] ?? "#6b7280",
-                                    }}
-                                  >
-                                    {task.status_name ?? task.status}
-                                  </Badge>
-                                  <span className="text-sm truncate max-w-[140px]">{task.title}</span>
-                                </div>
-                              </td>
-                              {dates.map((d) => {
-                                const isTaskDate = isSameDay(d, date);
-                                const hours = (task.accumulated_minutes || (task.time_estimate_hours ?? 0) * 60) / 60;
-                                return (
-                                  <td key={d.toISOString()} className={cn("p-2 text-center text-sm", isSameDay(d, new Date()) && "bg-primary/10")}>
-                                    {isTaskDate ? (
-                                      <span className="text-muted-foreground">{formatHours(hours)}</span>
-                                    ) : ""}
-                                  </td>
-                                );
-                              })}
-                              <td className="p-3 text-center bg-muted/30">
-                                <span className="text-sm text-muted-foreground">
-                                  {formatHours((task.accumulated_minutes || (task.time_estimate_hours ?? 0) * 60) / 60)}
-                                </span>
-                              </td>
-                            </tr>
-                          ));
-                        })}
+                        {/* Expanded Task Rows — ใช้เวลาจริงจาก time_sessions ต่อวัน */}
+                        {isExpanded && (() => {
+                          // รวม task ที่มี session จริงในช่วงนี้ของ user
+                          const taskMap = new Map<string, {
+                            id: string; title: string; status: string;
+                            statusName: string | null; statusColor: string | null;
+                          }>();
+                          dailyTime
+                            .filter((r) => r.employeeId === emp.id)
+                            .forEach((r) => {
+                              if (!taskMap.has(r.taskId)) {
+                                taskMap.set(r.taskId, {
+                                  id: r.taskId, title: r.taskTitle,
+                                  status: r.status, statusName: r.statusName, statusColor: r.statusColor,
+                                });
+                              }
+                            });
+                          const uniq = Array.from(taskMap.values());
+                          if (uniq.length === 0) return null;
+                          return uniq.map((task) => {
+                            const rowTotal = uniq.length > 0
+                              ? dailyTime
+                                  .filter((r) => r.employeeId === emp.id && r.taskId === task.id)
+                                  .reduce((s, r) => s + r.durationMin, 0) / 60
+                              : 0;
+                            return (
+                              <tr key={`${emp.id}-${task.id}`} className="border-b bg-muted/10">
+                                <td className="sticky left-0 bg-muted/10 p-3 pl-14 z-10">
+                                  <div className="flex items-center gap-2">
+                                    <Badge
+                                      variant="outline" className="text-[10px]"
+                                      style={{
+                                        borderColor: task.statusColor ?? STATUS_COLORS[task.status] ?? "#6b7280",
+                                        color:       task.statusColor ?? STATUS_COLORS[task.status] ?? "#6b7280",
+                                      }}
+                                    >
+                                      {task.statusName ?? task.status}
+                                    </Badge>
+                                    <span className="text-sm truncate max-w-[140px]">{task.title}</span>
+                                  </div>
+                                </td>
+                                {dates.map((d) => {
+                                  const h = getTaskHoursForUserOnDate(emp.id, task.id, d);
+                                  return (
+                                    <td key={d.toISOString()} className={cn("p-2 text-center text-sm", isSameDay(d, new Date()) && "bg-primary/10")}>
+                                      {h > 0 ? (
+                                        <span className="text-muted-foreground">{formatHours(h)}</span>
+                                      ) : ""}
+                                    </td>
+                                  );
+                                })}
+                                <td className="p-3 text-center bg-muted/30">
+                                  <span className="text-sm text-muted-foreground">
+                                    {formatHours(rowTotal)}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          });
+                        })()}
                       </Fragment>
                     );
                   })}

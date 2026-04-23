@@ -25,6 +25,10 @@ import {
   X,
   Play,
   Square,
+  Plus,
+  History,
+  RotateCcw,
+  AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -74,6 +78,8 @@ import { useTranslation } from "@/lib/i18n";
 import { tasksApi, type ApiTaskDetail } from "@/lib/api/tasks";
 import { commentsApi, type Comment as ApiComment } from "@/lib/api/comments";
 import { subtasksApi, type Subtask } from "@/lib/api/subtasks";
+import { timeTrackingApi, type TimeSession } from "@/lib/api/time-tracking";
+import { reworkApi, type ReworkEvent } from "@/lib/api/rework";
 import { toast } from "sonner";
 import { listsApi, type ListStatus } from "@/lib/api/lists";
 import { useAuthStore } from "@/lib/auth-store";
@@ -103,6 +109,7 @@ export default function TaskViewPage() {
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
   const [editingSubtaskId, setEditingSubtaskId] = useState<string | null>(null);
   const [editingSubtaskTitle, setEditingSubtaskTitle] = useState("");
+  const [isSendingComment, setIsSendingComment] = useState(false);
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingCommentContent, setEditingCommentContent] = useState("");
   const [estimateProgress, setEstimateProgress] = useState(0);
@@ -111,6 +118,23 @@ export default function TaskViewPage() {
   // Timer state
   const [runningTimer, setRunningTimer] = useState<{ id: string; startedAt: string } | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  // Time sessions + manual log dialog
+  const [sessions, setSessions] = useState<TimeSession[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showLogDialog, setShowLogDialog] = useState(false);
+  const [logHours, setLogHours] = useState<string>("0");
+  const [logMinutes, setLogMinutes] = useState<string>("30");
+  const [logNote, setLogNote] = useState("");
+  const [isSavingLog, setIsSavingLog] = useState(false);
+
+  // Rework
+  const [reworkEvents, setReworkEvents] = useState<ReworkEvent[]>([]);
+  const [showReworkDialog, setShowReworkDialog] = useState(false);
+  const [reworkToStatusId, setReworkToStatusId] = useState<string>("");
+  const [reworkReason, setReworkReason] = useState("");
+  const [isSavingRework, setIsSavingRework] = useState(false);
+  const [showReworkHistory, setShowReworkHistory] = useState(false);
 
   // Get current user from auth store
   const user = useAuthStore((s) => s.user);
@@ -279,22 +303,113 @@ export default function TaskViewPage() {
         await tasksApi.stopTimer(taskId);
         setRunningTimer(null);
         setElapsedSeconds(0);
-        // Refresh task to get updated time
-        const updated = await tasksApi.get(taskId);
+        const [updated] = await Promise.all([tasksApi.get(taskId), loadSessions()]);
         setTask(updated);
+        toast.success(language === "th" ? "หยุดจับเวลาแล้ว" : "Timer stopped");
       } else {
         const session = await tasksApi.startTimer(taskId);
         setRunningTimer(session);
         const startTime = new Date(session.startedAt).getTime();
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        setElapsedSeconds(elapsed);
+        setElapsedSeconds(Math.floor((Date.now() - startTime) / 1000));
+        toast.success(language === "th" ? "เริ่มจับเวลาแล้ว" : "Timer started");
       }
     } catch (err: any) {
       if (err?.data?.error === "SESSION_ALREADY_RUNNING") {
-        alert(`มี timer กำลังทำงานอยู่แล้ว (task: ${err.data.runningTaskId})`);
+        toast.error(language === "th" ? "มี timer กำลังทำงานอยู่แล้ว" : "A timer is already running");
       } else {
-        alert("Failed to toggle timer");
+        toast.error(language === "th" ? "ไม่สามารถจับเวลาได้" : "Failed to toggle timer");
       }
+    }
+  };
+
+  // Load sessions
+  const loadSessions = async () => {
+    try {
+      const list = await timeTrackingApi.list(taskId);
+      setSessions(list);
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => {
+    if (taskId) loadSessions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
+
+  const refreshTaskAndSessions = async () => {
+    try {
+      const [updated] = await Promise.all([
+        tasksApi.get(taskId),
+        loadSessions(),
+      ]);
+      setTask(updated);
+    } catch { /* ignore */ }
+  };
+
+  const handleLogTime = async () => {
+    const h = parseInt(logHours || "0", 10) || 0;
+    const m = parseInt(logMinutes || "0", 10) || 0;
+    const totalMin = h * 60 + m;
+    if (totalMin < 1) {
+      toast.error(language === "th" ? "กรุณาระบุเวลา" : "Please enter a duration");
+      return;
+    }
+    if (totalMin > 24 * 60) {
+      toast.error(language === "th" ? "เวลาต้องไม่เกิน 24 ชั่วโมง" : "Duration must be ≤ 24 hours");
+      return;
+    }
+    setIsSavingLog(true);
+    try {
+      await timeTrackingApi.log(taskId, { durationMin: totalMin, note: logNote.trim() || undefined });
+      toast.success(language === "th" ? "บันทึกเวลาสำเร็จ" : "Time logged");
+      setShowLogDialog(false);
+      setLogHours("0"); setLogMinutes("30"); setLogNote("");
+      await refreshTaskAndSessions();
+    } catch {
+      toast.error(language === "th" ? "บันทึกไม่สำเร็จ" : "Failed to log time");
+    } finally {
+      setIsSavingLog(false);
+    }
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    if (!confirm(language === "th" ? "ลบ session นี้?" : "Delete this session?")) return;
+    try {
+      await timeTrackingApi.deleteSession(taskId, sessionId);
+      toast.success(language === "th" ? "ลบสำเร็จ" : "Deleted");
+      await refreshTaskAndSessions();
+    } catch {
+      toast.error(language === "th" ? "ลบไม่สำเร็จ" : "Failed to delete");
+    }
+  };
+
+  // Load rework events
+  const loadReworkEvents = async () => {
+    try { setReworkEvents(await reworkApi.list(taskId)); } catch { /* ignore */ }
+  };
+  useEffect(() => { if (taskId) loadReworkEvents(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [taskId]);
+
+  const handleSubmitRework = async () => {
+    if (!reworkToStatusId) {
+      toast.error(language === "th" ? "เลือก status ปลายทาง" : "Select target status");
+      return;
+    }
+    if (!reworkReason.trim()) {
+      toast.error(language === "th" ? "กรุณาระบุเหตุผล" : "Please enter a reason");
+      return;
+    }
+    setIsSavingRework(true);
+    try {
+      await reworkApi.create(taskId, { toStatusId: reworkToStatusId, reason: reworkReason.trim() });
+      toast.success(language === "th" ? "ส่งกลับแก้ไขสำเร็จ" : "Sent back for rework");
+      setShowReworkDialog(false);
+      setReworkReason("");
+      setReworkToStatusId("");
+      const [updated] = await Promise.all([tasksApi.get(taskId), loadReworkEvents()]);
+      setTask(updated);
+    } catch (err: any) {
+      toast.error(err?.data?.message || (language === "th" ? "ไม่สำเร็จ" : "Failed"));
+    } finally {
+      setIsSavingRework(false);
     }
   };
 
@@ -375,16 +490,19 @@ export default function TaskViewPage() {
     : priorityValue === "low" ? "#6b7280" 
     : "#3b82f6";
 
-  const handleAddComment = () => {
-    if (!newComment.trim() || !taskId) return;
-    commentsApi.create(taskId, { commentText: newComment.trim() })
-      .then((newCommentData) => {
-        setComments([...comments, newCommentData]);
-        setNewComment("");
-      })
-      .catch((err) => {
-        console.error("Failed to add comment:", err);
-      });
+  const handleAddComment = async () => {
+    if (!newComment.trim() || !taskId || isSendingComment) return;
+    setIsSendingComment(true);
+    try {
+      const newCommentData = await commentsApi.create(taskId, { commentText: newComment.trim() });
+      setComments((prev) => [...prev, newCommentData]);
+      setNewComment("");
+    } catch (err) {
+      console.error("Failed to add comment:", err);
+      toast.error(language === "th" ? "ส่ง comment ไม่สำเร็จ" : "Failed to send comment");
+    } finally {
+      setIsSendingComment(false);
+    }
   };
 
   const handleEditComment = (commentId: string) => {
@@ -398,28 +516,40 @@ export default function TaskViewPage() {
     }
   };
 
-  const handleSaveEditComment = () => {
+  const handleSaveEditComment = async () => {
     if (!editingCommentId || !editingCommentContent.trim() || !taskId) return;
-    commentsApi.update(taskId, editingCommentId, { commentText: editingCommentContent.trim() })
-      .then((updatedComment) => {
-        setComments(comments.map((c) => c.id === editingCommentId ? updatedComment : c));
-        setEditingCommentId(null);
-        setEditingCommentContent("");
-      })
-      .catch((err) => {
-        console.error("Failed to update comment:", err);
-      });
+    try {
+      const updatedComment = await commentsApi.update(taskId, editingCommentId, { commentText: editingCommentContent.trim() });
+      setComments((prev) => prev.map((c) => c.id === editingCommentId ? updatedComment : c));
+      setEditingCommentId(null);
+      setEditingCommentContent("");
+    } catch (err) {
+      console.error("Failed to update comment:", err);
+      toast.error(language === "th" ? "แก้ไขไม่สำเร็จ" : "Failed to update");
+    }
   };
 
-  const handleDeleteComment = (commentId: string) => {
+  const handleDeleteComment = async (commentId: string) => {
     if (!taskId) return;
-    commentsApi.delete(taskId, commentId)
-      .then(() => {
-        setComments(comments.filter((c) => c.id !== commentId));
-      })
-      .catch((err) => {
-        console.error("Failed to delete comment:", err);
-      });
+    const ok = window.confirm(language === "th" ? "ลบ comment นี้?" : "Delete this comment?");
+    if (!ok) return;
+    try {
+      await commentsApi.delete(taskId, commentId);
+      setComments((prev) => prev.filter((c) => c.id !== commentId));
+    } catch (err) {
+      console.error("Failed to delete comment:", err);
+      toast.error(language === "th" ? "ลบไม่สำเร็จ" : "Failed to delete");
+    }
+  };
+
+  // Relative time formatter: "เมื่อสักครู่", "5 นาทีที่แล้ว", etc.
+  const formatRelative = (iso: string): string => {
+    const diffSec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    if (diffSec < 45)        return language === "th" ? "เมื่อสักครู่"         : "just now";
+    if (diffSec < 3600)      return language === "th" ? `${Math.floor(diffSec / 60)} นาทีที่แล้ว` : `${Math.floor(diffSec / 60)}m ago`;
+    if (diffSec < 86400)     return language === "th" ? `${Math.floor(diffSec / 3600)} ชั่วโมงที่แล้ว` : `${Math.floor(diffSec / 3600)}h ago`;
+    if (diffSec < 86400 * 7) return language === "th" ? `${Math.floor(diffSec / 86400)} วันที่แล้ว` : `${Math.floor(diffSec / 86400)}d ago`;
+    return format(new Date(iso), "d MMM yyyy", { locale });
   };
 
   const handleSaveProgress = () => {
@@ -662,21 +792,33 @@ export default function TaskViewPage() {
             <CardContent className="space-y-4">
               {/* Add Comment */}
               <div className="flex gap-3">
-                <Avatar className="h-8 w-8">
+                <Avatar className="h-8 w-8 shrink-0">
                   <AvatarImage src={currentUser?.avatar} />
                   <AvatarFallback>{currentUser?.name?.charAt(0) || "?"}</AvatarFallback>
                 </Avatar>
                 <div className="flex-1 space-y-2">
                   <Textarea
-                    placeholder={language === "th" ? "เขียน comment..." : "Write a comment..."}
+                    placeholder={language === "th" ? "เขียน comment... (Ctrl+Enter เพื่อส่ง)" : "Write a comment... (Ctrl+Enter to send)"}
                     value={newComment}
                     onChange={(e) => setNewComment(e.target.value)}
+                    onKeyDown={(e) => {
+                      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                        e.preventDefault();
+                        handleAddComment();
+                      }
+                    }}
                     rows={3}
+                    className="resize-none"
                   />
-                  <div className="flex justify-end">
-                    <Button onClick={handleAddComment} disabled={!newComment.trim()}>
-                      <Send className="h-4 w-4 mr-2" />
-                      {language === "th" ? "ส่ง" : "Send"}
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-muted-foreground">
+                      {newComment.trim().length > 0 && `${newComment.trim().length} ${language === "th" ? "ตัวอักษร" : "chars"}`}
+                    </span>
+                    <Button onClick={handleAddComment} disabled={!newComment.trim() || isSendingComment} size="sm">
+                      <Send className="h-3.5 w-3.5 mr-1.5" />
+                      {isSendingComment
+                        ? (language === "th" ? "กำลังส่ง..." : "Sending...")
+                        : (language === "th" ? "ส่ง" : "Send")}
                     </Button>
                   </div>
                 </div>
@@ -690,9 +832,12 @@ export default function TaskViewPage() {
                   {language === "th" ? "กำลังโหลด..." : "Loading..."}
                 </p>
               ) : comments.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">
-                  {language === "th" ? "ยังไม่มี comment" : "No comments yet"}
-                </p>
+                <div className="flex flex-col items-center gap-2 py-6 text-muted-foreground">
+                  <MessageSquare className="h-8 w-8 opacity-30" />
+                  <p className="text-sm">
+                    {language === "th" ? "ยังไม่มี comment — เริ่มสนทนาได้เลย" : "No comments yet — start the conversation"}
+                  </p>
+                </div>
               ) : (
                 <div className="space-y-4">
                   {comments.map((comment) => {
@@ -705,53 +850,62 @@ export default function TaskViewPage() {
                     const isEditing = editingCommentId === comment.id;
                     const isOwner = commentAuthorId === currentUserId;
 
-                    console.log("Comment debug:", {
-                      comment,
-                      commentAuthorId,
-                      currentUserId,
-                      isOwner,
-                      commentAuthorAvatar,
-                      commentAuthorName
-                    });
-
-                    // For other users, use their avatar; for owner, use current user's avatar if available
                     const displayName = isOwner && currentUser ? currentUser.name : commentAuthorName;
                     const displayAvatar = commentAuthorAvatar as string | undefined;
 
                     return (
                       <div key={comment.id} className="flex gap-3 group">
                         {displayAvatar ? (
-                          <img 
-                            src={displayAvatar} 
+                          <img
+                            src={displayAvatar}
                             alt={displayName}
-                            className="h-8 w-8 rounded-full object-cover"
+                            className="h-8 w-8 rounded-full object-cover shrink-0 ring-2 ring-background"
                           />
                         ) : (
-                          <Avatar className="h-8 w-8">
+                          <Avatar className="h-8 w-8 shrink-0 ring-2 ring-background">
                             <AvatarFallback>{displayName?.charAt(0) || "?"}</AvatarFallback>
                           </Avatar>
                         )}
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
                             <span className="text-sm font-medium">{displayName}</span>
-                            <span className="text-xs text-muted-foreground">
-                              {format(new Date(comment.createdAt), "d MMM yyyy HH:mm", { locale })}
+                            {isOwner && (
+                              <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                                {language === "th" ? "คุณ" : "You"}
+                              </Badge>
+                            )}
+                            <span
+                              className="text-xs text-muted-foreground"
+                              title={format(new Date(comment.createdAt), "d MMM yyyy HH:mm:ss", { locale })}
+                            >
+                              {formatRelative(comment.createdAt)}
                             </span>
                             {comment.updatedAt && (
-                              <span className="text-xs text-muted-foreground">
-                                ({language === "th" ? "แก้ไขแล้ว" : "edited"})
+                              <span className="text-xs text-muted-foreground italic">
+                                · {language === "th" ? "แก้ไขแล้ว" : "edited"}
                               </span>
                             )}
                           </div>
                           {isEditing ? (
                             <div className="space-y-2">
                               <Textarea
+                                autoFocus
                                 value={editingCommentContent}
                                 onChange={(e) => setEditingCommentContent(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                                    e.preventDefault();
+                                    handleSaveEditComment();
+                                  } else if (e.key === "Escape") {
+                                    setEditingCommentId(null);
+                                    setEditingCommentContent("");
+                                  }
+                                }}
                                 rows={2}
+                                className="resize-none"
                               />
-                              <div className="flex gap-2">
-                                <Button size="sm" onClick={handleSaveEditComment}>
+                              <div className="flex gap-2 text-[11px] text-muted-foreground items-center">
+                                <Button size="sm" onClick={handleSaveEditComment} disabled={!editingCommentContent.trim()}>
                                   {language === "th" ? "บันทึก" : "Save"}
                                 </Button>
                                 <Button size="sm" variant="outline" onClick={() => {
@@ -760,11 +914,15 @@ export default function TaskViewPage() {
                                 }}>
                                   {language === "th" ? "ยกเลิก" : "Cancel"}
                                 </Button>
+                                <span className="ml-1">Ctrl+Enter {language === "th" ? "เพื่อบันทึก · Esc ยกเลิก" : "to save · Esc to cancel"}</span>
                               </div>
                             </div>
                           ) : (
-                            <div className="flex items-start justify-between">
-                              <p className="text-sm whitespace-pre-wrap">{commentText}</p>
+                            <div className={cn(
+                              "flex items-start justify-between gap-2 rounded-lg px-3 py-2",
+                              isOwner ? "bg-primary/5 border border-primary/10" : "bg-muted/50",
+                            )}>
+                              <p className="text-sm whitespace-pre-wrap break-words flex-1">{commentText}</p>
                               {isOwner && (
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild>
@@ -889,54 +1047,209 @@ export default function TaskViewPage() {
               )}
 
               {/* Time Tracking */}
-              <div className="space-y-2">
-                <Label className="text-xs text-muted-foreground flex items-center gap-1">
-                  <Clock className="h-3 w-3" />
-                  {language === "th" ? "จับเวลา" : "Time Tracker"}
-                </Label>
-                <div className="flex items-center gap-2">
-                  {runningTimer ? (
-                    <>
-                      <Badge variant="destructive" className="font-mono animate-pulse">
-                        {formatElapsed(elapsedSeconds)}
-                      </Badge>
+              {(() => {
+                const accumMin = (task.accumulatedMinutes ?? (task as any).accumulated_minutes ?? 0) as number;
+                const estimateHours = task.timeEstimateHours ?? (task as any).time_estimate_hours ?? null;
+                const estimateMin = estimateHours ? Math.round(Number(estimateHours) * 60) : 0;
+                const totalDisplayMin = accumMin + (runningTimer ? Math.floor(elapsedSeconds / 60) : 0);
+                const pct = estimateMin > 0 ? Math.min(100, Math.round((totalDisplayMin / estimateMin) * 100)) : 0;
+                const overrun = estimateMin > 0 && totalDisplayMin > estimateMin;
+                const fmtMin = (min: number) => {
+                  const h = Math.floor(min / 60);
+                  const m = min % 60;
+                  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+                };
+                return (
+                  <div className="space-y-3 rounded-lg border bg-gradient-to-br from-background to-muted/30 p-3">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs text-muted-foreground flex items-center gap-1">
+                        <Clock className="h-3 w-3" />
+                        {language === "th" ? "จับเวลา" : "Time Tracking"}
+                      </Label>
                       {canTimer && (
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
-                        onClick={toggleTimer}
-                        className="text-destructive"
-                      >
-                        <Square className="h-3 w-3 mr-1" />
-                        {language === "th" ? "หยุด" : "Stop"}
-                      </Button>
+                        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setShowLogDialog(true)}>
+                          <Plus className="h-3 w-3 mr-1" />
+                          {language === "th" ? "บันทึกเอง" : "Log"}
+                        </Button>
                       )}
-                    </>
-                  ) : (
-                    <>
-                      {(task as any).accumulated_minutes > 0 && (
-                        <span className="text-sm text-muted-foreground">
-                          {(() => {
-                            const h = Math.floor((task as any).accumulated_minutes / 60);
-                            const m = (task as any).accumulated_minutes % 60;
-                            return h > 0 ? `${h}h ${m}m` : `${m}m`;
-                          })()}
+                    </div>
+
+                    {runningTimer ? (
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="relative flex h-2 w-2">
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-destructive opacity-75" />
+                            <span className="relative inline-flex h-2 w-2 rounded-full bg-destructive" />
+                          </span>
+                          <span className="font-mono text-lg font-semibold tabular-nums">
+                            {formatElapsed(elapsedSeconds)}
+                          </span>
+                        </div>
+                        {canTimer && (
+                          <Button variant="outline" size="sm" onClick={toggleTimer} className="text-destructive">
+                            <Square className="h-3 w-3 mr-1" />
+                            {language === "th" ? "หยุด" : "Stop"}
+                          </Button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium">
+                          {accumMin > 0 ? fmtMin(accumMin) : (language === "th" ? "ยังไม่มีเวลา" : "No time yet")}
                         </span>
+                        {canTimer && (
+                          <Button variant="outline" size="sm" onClick={toggleTimer}>
+                            <Play className="h-3 w-3 mr-1" />
+                            {language === "th" ? "เริ่ม" : "Start"}
+                          </Button>
+                        )}
+                      </div>
+                    )}
+
+                    {estimateMin > 0 && (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span>{fmtMin(totalDisplayMin)} / {fmtMin(estimateMin)}</span>
+                          <span className={cn(overrun && "text-destructive font-medium")}>
+                            {overrun ? `+${fmtMin(totalDisplayMin - estimateMin)}` : `${pct}%`}
+                          </span>
+                        </div>
+                        <Progress value={pct} className={cn("h-1.5", overrun && "[&>div]:bg-destructive")} />
+                      </div>
+                    )}
+
+                    {sessions.length > 0 && (
+                      <div className="pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowHistory((v) => !v)}
+                          className="flex w-full items-center justify-between text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <span className="flex items-center gap-1">
+                            <History className="h-3 w-3" />
+                            {language === "th" ? "ประวัติ" : "History"} ({sessions.length})
+                          </span>
+                          <span>{showHistory ? "−" : "+"}</span>
+                        </button>
+                        {showHistory && (
+                          <ul className="mt-2 space-y-1 max-h-48 overflow-y-auto">
+                            {sessions.map((s) => (
+                              <li key={s.id} className="group flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/60">
+                                <Avatar className="h-5 w-5">
+                                  <AvatarFallback className="text-[9px]">
+                                    {s.employeeName?.slice(0, 1) ?? "?"}
+                                  </AvatarFallback>
+                                </Avatar>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-medium truncate">{s.employeeName}</span>
+                                    {s.endedAt ? (
+                                      <Badge variant="secondary" className="h-4 text-[9px] px-1">
+                                        {fmtMin(s.durationMin ?? 0)}
+                                      </Badge>
+                                    ) : (
+                                      <Badge variant="destructive" className="h-4 text-[9px] px-1 animate-pulse">
+                                        {language === "th" ? "กำลังจับเวลา" : "running"}
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] text-muted-foreground truncate">
+                                    {format(new Date(s.startedAt), "d MMM HH:mm", { locale })}
+                                    {s.note ? ` · ${s.note}` : ""}
+                                  </div>
+                                </div>
+                                {(user?.role === "admin" || s.employeeId === user?.id) && s.endedAt && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                                    onClick={() => handleDeleteSession(s.id)}
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </Button>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Rework */}
+              {(() => {
+                const canRework = user && (user.role === "admin" || user.role === "manager");
+                const count = (task.reworkCount ?? (task as any).rework_count ?? 0) as number;
+                if (!canRework && count === 0) return null;
+                return (
+                  <div className="space-y-2 rounded-lg border bg-gradient-to-br from-background to-amber-50/30 dark:to-amber-950/10 p-3">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs text-muted-foreground flex items-center gap-1">
+                        <RotateCcw className="h-3 w-3" />
+                        {language === "th" ? "ส่งกลับแก้ไข" : "Rework"}
+                        {count > 0 && (
+                          <Badge variant="secondary" className="ml-1 h-4 text-[10px] px-1.5 bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100">
+                            × {count}
+                          </Badge>
+                        )}
+                      </Label>
+                      {canRework && (
+                        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setShowReworkDialog(true)}>
+                          <RotateCcw className="h-3 w-3 mr-1" />
+                          {language === "th" ? "ขอแก้ไข" : "Send back"}
+                        </Button>
                       )}
-                      {canTimer && (
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
-                        onClick={toggleTimer}
-                      >
-                        <Play className="h-3 w-3 mr-1" />
-                        {language === "th" ? "เริ่ม" : "Start"}
-                      </Button>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
+                    </div>
+
+                    {reworkEvents.length > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setShowReworkHistory((v) => !v)}
+                          className="flex w-full items-center justify-between text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <span className="flex items-center gap-1">
+                            <History className="h-3 w-3" />
+                            {language === "th" ? "ประวัติ" : "History"} ({reworkEvents.length})
+                          </span>
+                          <span>{showReworkHistory ? "−" : "+"}</span>
+                        </button>
+                        {showReworkHistory && (
+                          <ul className="space-y-2 max-h-56 overflow-y-auto">
+                            {reworkEvents.map((ev) => (
+                              <li key={ev.id} className="rounded border-l-2 border-amber-400 bg-amber-50/50 dark:bg-amber-950/20 px-2 py-1.5 text-xs">
+                                <div className="flex items-center gap-1.5">
+                                  <Avatar className="h-4 w-4">
+                                    <AvatarFallback className="text-[8px]">
+                                      {ev.requestedByName?.slice(0, 1) ?? "?"}
+                                    </AvatarFallback>
+                                  </Avatar>
+                                  <span className="font-medium truncate">{ev.requestedByName ?? "—"}</span>
+                                  <span className="text-muted-foreground">·</span>
+                                  <span className="text-muted-foreground text-[10px]">
+                                    {format(new Date(ev.createdAt), "d MMM HH:mm", { locale })}
+                                  </span>
+                                </div>
+                                {(ev.fromStatusName || ev.toStatusName) && (
+                                  <div className="mt-0.5 text-[10px] text-muted-foreground">
+                                    {ev.fromStatusName ?? "—"} → <span className="font-medium text-foreground">{ev.toStatusName ?? "—"}</span>
+                                  </div>
+                                )}
+                                <div className="mt-1 flex items-start gap-1">
+                                  <AlertCircle className="h-3 w-3 mt-0.5 text-amber-600 shrink-0" />
+                                  <span className="flex-1">{ev.reason}</span>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Tags */}
               {task.tags && task.tags.length > 0 && (
@@ -1168,6 +1481,122 @@ export default function TaskViewPage() {
             </Button>
             <Button onClick={handleSaveProgress}>
               {t("common.save")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rework dialog */}
+      <Dialog open={showReworkDialog} onOpenChange={setShowReworkDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RotateCcw className="h-4 w-4 text-amber-600" />
+              {language === "th" ? "ส่งกลับแก้ไข" : "Send Back for Rework"}
+            </DialogTitle>
+            <DialogDescription>
+              {language === "th"
+                ? "เลือก status ปลายทางและระบุเหตุผลที่ต้องแก้ไข"
+                : "Select a target status and provide a reason."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label className="text-xs">{language === "th" ? "ส่งกลับไปที่" : "Send back to"}</Label>
+              <Select value={reworkToStatusId} onValueChange={setReworkToStatusId}>
+                <SelectTrigger>
+                  <SelectValue placeholder={language === "th" ? "เลือก status" : "Select status"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {statusesFromApi
+                    .filter((s) => s.id !== (task.listStatusId ?? (task as any).list_status_id))
+                    .map((s) => (
+                      <SelectItem key={s.id} value={s.id}>
+                        <span className="flex items-center gap-2">
+                          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: s.color ?? "#888" }} />
+                          {s.name}
+                        </span>
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">{language === "th" ? "เหตุผล" : "Reason"} *</Label>
+              <Textarea
+                placeholder={language === "th" ? "ระบุสิ่งที่ต้องแก้ไข..." : "Describe what needs to be fixed..."}
+                value={reworkReason}
+                onChange={(e) => setReworkReason(e.target.value)}
+                rows={4}
+                autoFocus
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowReworkDialog(false)} disabled={isSavingRework}>
+              {t("common.cancel")}
+            </Button>
+            <Button onClick={handleSubmitRework} disabled={isSavingRework} className="bg-amber-600 hover:bg-amber-700">
+              {isSavingRework
+                ? (language === "th" ? "กำลังส่ง..." : "Sending...")
+                : (language === "th" ? "ส่งกลับแก้ไข" : "Send Back")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Manual time log dialog */}
+      <Dialog open={showLogDialog} onOpenChange={setShowLogDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {language === "th" ? "บันทึกเวลาด้วยตนเอง" : "Log Time Manually"}
+            </DialogTitle>
+            <DialogDescription>
+              {language === "th"
+                ? "กรอกเวลาที่ทำงานไปและหมายเหตุ (ถ้ามี)"
+                : "Enter the time you worked and an optional note."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs">{language === "th" ? "ชั่วโมง" : "Hours"}</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={24}
+                  value={logHours}
+                  onChange={(e) => setLogHours(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">{language === "th" ? "นาที" : "Minutes"}</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={59}
+                  value={logMinutes}
+                  onChange={(e) => setLogMinutes(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">{language === "th" ? "หมายเหตุ" : "Note"}</Label>
+              <Textarea
+                placeholder={language === "th" ? "ทำอะไรไปบ้าง..." : "What did you work on..."}
+                value={logNote}
+                onChange={(e) => setLogNote(e.target.value)}
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowLogDialog(false)} disabled={isSavingLog}>
+              {t("common.cancel")}
+            </Button>
+            <Button onClick={handleLogTime} disabled={isSavingLog}>
+              {isSavingLog ? (language === "th" ? "กำลังบันทึก..." : "Saving...") : (language === "th" ? "บันทึก" : "Save")}
             </Button>
           </DialogFooter>
         </DialogContent>

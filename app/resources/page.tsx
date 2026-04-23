@@ -122,7 +122,7 @@ function ResourcesPageInner() {
       const endStr   = format(dateRange.end,   "yyyy-MM-dd");
 
       const [empRes, taskRes, cfgRes] = await Promise.allSettled([
-        employeesApi.list({ limit: 500 }),
+        employeesApi.listAll(),
         tasksApi.calendar(startStr, endStr),
         performanceConfigApi.listAll(),
       ]);

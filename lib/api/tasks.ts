@@ -76,6 +76,8 @@ export interface ApiTaskDetail {
   displayOrder: number;
   estimateProgress: number;
   blockedNote: string | null;
+  reworkCount: number;
+  lastReworkedAt: string | null;
   tags: string[];
   createdAt: string;
   updatedAt: string;

@@ -163,6 +163,48 @@ export function calculatePlanFinish(planStart: Date | undefined, duration: numbe
   return planFinish;
 }
 
+// ── Working-days-aware helpers (respect assignee's work schedule) ────────────
+// workDays uses ISO weekday: 1=Mon ... 7=Sun. Default Mon-Fri.
+const DEFAULT_WORK_DAYS = [1, 2, 3, 4, 5];
+function jsDowToIso(dow: number): number { return dow === 0 ? 7 : dow; }
+
+export function calculatePlanFinishWorkDays(
+  planStart: Date | undefined,
+  duration: number | undefined,
+  workDays: number[] = DEFAULT_WORK_DAYS,
+): Date | undefined {
+  if (!planStart || !duration || duration < 1) return undefined;
+  const wd = workDays.length > 0 ? workDays : DEFAULT_WORK_DAYS;
+  const d = new Date(planStart); d.setHours(0, 0, 0, 0);
+  let guard = 0;
+  // Advance to first working day if start lands on day off
+  while (!wd.includes(jsDowToIso(d.getDay())) && guard++ < 366) d.setDate(d.getDate() + 1);
+  let counted = 1;
+  while (counted < duration && guard++ < 3660) {
+    d.setDate(d.getDate() + 1);
+    if (wd.includes(jsDowToIso(d.getDay()))) counted++;
+  }
+  return d;
+}
+
+export function calculateDurationWorkDays(
+  planStart: Date | undefined,
+  planFinish: Date | undefined,
+  workDays: number[] = DEFAULT_WORK_DAYS,
+): number | undefined {
+  if (!planStart || !planFinish) return undefined;
+  const start = new Date(planStart); start.setHours(0, 0, 0, 0);
+  const end   = new Date(planFinish); end.setHours(0, 0, 0, 0);
+  if (end.getTime() < start.getTime()) return undefined;
+  const wd = workDays.length > 0 ? workDays : DEFAULT_WORK_DAYS;
+  let count = 0; const cursor = new Date(start); let guard = 0;
+  while (cursor.getTime() <= end.getTime() && guard++ < 3660) {
+    if (wd.includes(jsDowToIso(cursor.getDay()))) count++;
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return count > 0 ? count : undefined;
+}
+
 // Plan Progress: inclusive-day basis. Span = (last day - start day + 1).
 // Day-of-start counts as 1 day elapsed → 1/span. Last day → span/span = 100%.
 // Example: 16→20 (5 days) ⇒ day16=20%, day17=40%, day20=100%.

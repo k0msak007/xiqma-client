@@ -233,7 +233,7 @@ function AnalyticsPageInner() {
     setDataLoading(true);
 
     Promise.all([
-      employeesApi.listAll(),                            // GET /employees/all — ทุก role เข้าถึงได้
+      employeesApi.listAll(),                            // GET /employees/all — backend scope ตาม role (admin=ทุกคน, manager=ทีมตัวเอง)
       tasksApi.calendar(start, end),
       performanceConfigApi.getMe().catch(() => null),    // ถ้ายังไม่มี config ไม่ error
     ])

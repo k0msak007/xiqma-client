@@ -157,7 +157,7 @@ export function TaskDetail({ task, onClose, onTaskChange, readOnly = false }: Ta
   useEffect(() => {
     if (showAssigneeDialog && employees.length === 0) {
       import("@/lib/api/employees").then(({ employeesApi }) => {
-        employeesApi.list({ isActive: true, limit: 200 }).then((res) => {
+        employeesApi.listAll().then((res) => {
           setEmployees(res.map((e) => ({ id: e.id, name: e.name, avatarUrl: e.avatarUrl })));
         }).catch(() => {});
       });

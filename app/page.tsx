@@ -60,7 +60,7 @@ export default function DashboardPage() {
     Promise.all([
       tasksApi.myTasks(),
       tasksApi.calendar(startStr, endStr),
-      employeesApi.list({ limit: 100, isActive: true }),
+      employeesApi.listAll(),
     ])
       .then(([my, cal, emp]) => {
         setMyTasks(my);

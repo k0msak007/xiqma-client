@@ -58,7 +58,7 @@ export function SpaceMembersDialog({ open, onOpenChange, spaceId, spaceName }: S
     try {
       const [spaceDetail, employeesRes] = await Promise.all([
         spacesApi.get(spaceId),
-        employeesApi.list({ isActive: true, limit: 200 }),
+        employeesApi.listAll(),
       ]);
       
       const empList = (employeesRes as unknown as { rows?: { id: string; name: string; email: string; avatarUrl?: string }[] }).rows || employeesRes as unknown as { id: string; name: string; email: string; avatarUrl?: string }[];
