@@ -100,8 +100,24 @@ export function TaskCardBoard({
   }, [task.timeSpent]);
 
   const priorityInfo = priorityConfig[task.priority];
-  const isOverdue = task.dueDate && new Date(task.dueDate) < new Date();
+  // Single source of truth: completedAt (set/cleared by DB trigger on status change)
+  // Optimistic override: when user changes status, infer completedAt from new status type
+  // before the server round-trip completes.
+  const [optimisticCompletedAt, setOptimisticCompletedAt] = useState<Date | null | undefined>(undefined);
+  const taskCompletedAtRaw = (task as any).completedAt ?? (task as any).completed_at ?? null;
+  // Reset optimistic value when prop catches up
+  useEffect(() => { setOptimisticCompletedAt(undefined); }, [taskCompletedAtRaw]);
+  const _completedAtRaw = optimisticCompletedAt !== undefined ? optimisticCompletedAt : taskCompletedAtRaw;
+  const isCompletedForOverdue = !!_completedAtRaw;
+  const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && !isCompletedForOverdue;
   const isCompleted = task.estimateProgress === 100;
+  const lateDays = (() => {
+    if (!isCompletedForOverdue || !task.dueDate) return 0;
+    const due = new Date(task.dueDate); due.setHours(0, 0, 0, 0);
+    const done = new Date(_completedAtRaw); done.setHours(0, 0, 0, 0);
+    const diff = Math.round((done.getTime() - due.getTime()) / (1000 * 60 * 60 * 24));
+    return diff > 0 ? diff : 0;
+  })();
   const canTimer = user && (user.role === "admin" || task.assigneeIds.includes(user.id));
   const isTracking = !!runningTimer;
 
@@ -166,6 +182,15 @@ export function TaskCardBoard({
   const currentStatus = statuses.find((s) => s.id === task.statusId);
 
   const handleStatusChange = async (newStatusId: string) => {
+    // Optimistic completedAt update — infer from target status type
+    const TERMINAL = ["done", "completed", "closed", "cancelled"];
+    const newStatus = statuses.find((s) => s.id === newStatusId);
+    const newTerminal = !!newStatus && TERMINAL.includes(String(newStatus.type ?? "").toLowerCase());
+    if (newTerminal && !taskCompletedAtRaw) {
+      setOptimisticCompletedAt(new Date());
+    } else if (!newTerminal && taskCompletedAtRaw) {
+      setOptimisticCompletedAt(null);
+    }
     if (onUpdate) {
       await onUpdate(task.id, { statusId: newStatusId });
       toast.success("Status updated");
@@ -212,7 +237,7 @@ export function TaskCardBoard({
           "group relative cursor-pointer overflow-hidden rounded-xl border bg-card shadow-sm transition-all duration-200",
           "hover:-translate-y-0.5 hover:shadow-lg hover:border-primary/40",
           isSelected && "ring-2 ring-primary ring-offset-1 border-primary shadow-md",
-          isCompleted && "bg-gradient-to-br from-green-50/60 to-card border-green-200/60",
+          isCompletedForOverdue && "bg-gradient-to-br from-emerald-50/50 to-card border-emerald-200/50",
           isTracking && "ring-1 ring-red-400/50"
         )}
       >
@@ -415,6 +440,12 @@ export function TaskCardBoard({
                 />
               </PopoverContent>
             </Popover>
+
+            {!isOverdue && lateDays > 0 && (
+              <span className="inline-flex h-6 items-center gap-0.5 rounded-md bg-muted/70 px-1.5 text-[10px] font-medium text-muted-foreground">
+                <Clock className="h-2.5 w-2.5" /> เสร็จล่าช้า {lateDays} วัน
+              </span>
+            )}
 
             {/* Actual Start */}
             <Popover>

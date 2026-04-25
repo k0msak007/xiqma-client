@@ -30,10 +30,6 @@ import {
   GanttChart,
   Loader2,
   Trash2,
-  UserCircle,
-  Package,
-  FileText,
-  Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkspaceStore } from "@/lib/workspace-store";
@@ -104,19 +100,6 @@ const mainNavItems: NavItem[] = [
   { label: "Search", icon: Search, href: "/search" },
 ];
 
-// CRM sub-nav — visible only to users with `crm_view` (admin always sees all)
-const crmNavItems: NavItem[] = [
-  { label: "Dashboard",        icon: BarChart3,  href: "/crm/dashboard",     requires: ["crm_view"] },
-  { label: "Leads",            icon: Target,     href: "/crm/leads",         requires: ["crm_view"] },
-  { label: "Accounts",         icon: Briefcase,  href: "/crm/accounts",      requires: ["crm_view"] },
-  { label: "CRM Contacts",     icon: UserCircle, href: "/crm/contacts",      requires: ["crm_view"] },
-  { label: "Opportunities",    icon: Rocket,     href: "/crm/opportunities", requires: ["crm_view"] },
-  { label: "Quotations",       icon: FileText,   href: "/crm/quotations",    requires: ["crm_view"] },
-  { label: "Sales Activities", icon: Activity,   href: "/crm/activities",    requires: ["crm_view"] },
-  { label: "Products",         icon: Package,    href: "/crm/products",      requires: ["crm_view"] },
-  { label: "CRM Settings",     icon: Settings,   href: "/crm/settings",      requires: ["crm_admin"] },
-];
-
 const toolNavItems: NavItem[] = [
   { label: "Resources", icon: Calendar, href: "/resources", requires: ["view_analytics", "manage_users"] },
   { label: "Time Sheet", icon: Clock, href: "/timesheet", requires: ["view_tasks"] },
@@ -133,8 +116,6 @@ export function AppSidebar() {
   const canSee = (item: NavItem) => !item.requires || hasAny(item.requires);
   const visibleMainItems = mainNavItems.filter(canSee);
   const visibleToolItems = toolNavItems.filter(canSee);
-  const visibleCrmItems = crmNavItems.filter(canSee);
-  const crmOpen = pathname.startsWith("/crm");
 
   const {
     spaces,
@@ -196,15 +177,15 @@ export function AppSidebar() {
   return (
     <Sidebar className="border-r border-border/50">
       <SidebarHeader className="border-b border-border/50 px-4 py-3">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-            <FolderKanban className="h-4 w-4 text-primary-foreground" />
+        <Link href="/" className="flex items-center gap-3 group">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-orange-400 via-pink-500 to-rose-500 text-white shadow-md shadow-rose-500/25 transition group-hover:shadow-rose-500/40">
+            <span className="text-sm font-bold">X</span>
           </div>
-          <div className="flex flex-col">
-            <span className="text-sm font-semibold">Task Manager</span>
-            <span className="text-xs text-muted-foreground">Workspace</span>
+          <div className="flex flex-col leading-tight">
+            <span className="text-sm font-semibold tracking-tight">Xiqma</span>
+            <span className="text-[11px] text-muted-foreground">Workspace</span>
           </div>
-        </div>
+        </Link>
       </SidebarHeader>
 
       <SidebarContent>
@@ -226,43 +207,10 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* CRM — collapsible, permission-gated */}
-        {visibleCrmItems.length > 0 && (
-          <SidebarGroup>
-            <Collapsible defaultOpen={crmOpen}>
-              <SidebarGroupLabel asChild>
-                <CollapsibleTrigger className="flex w-full items-center justify-between px-2 text-xs font-medium text-muted-foreground hover:text-foreground">
-                  <span className="flex items-center gap-2">
-                    <Target className="h-3.5 w-3.5" />
-                    CRM
-                  </span>
-                  <ChevronDown className="h-3 w-3 transition-transform group-data-[state=closed]/collapsible:-rotate-90" />
-                </CollapsibleTrigger>
-              </SidebarGroupLabel>
-              <CollapsibleContent>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    {visibleCrmItems.map((item) => (
-                      <SidebarMenuItem key={item.label}>
-                        <SidebarMenuButton asChild isActive={pathname === item.href}>
-                          <Link href={item.href}>
-                            <item.icon className="h-4 w-4" />
-                            <span>{item.label}</span>
-                          </Link>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </CollapsibleContent>
-            </Collapsible>
-          </SidebarGroup>
-        )}
-
         {/* Spaces */}
         <SidebarGroup>
           <div className="flex items-center justify-between px-2">
-            <SidebarGroupLabel className="text-xs font-medium text-muted-foreground">
+            <SidebarGroupLabel className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               Spaces
             </SidebarGroupLabel>
             <Button
@@ -603,7 +551,7 @@ export function AppSidebar() {
 
         {/* Tools */}
         <SidebarGroup className="mt-auto">
-          <SidebarGroupLabel className="text-xs font-medium text-muted-foreground">
+          <SidebarGroupLabel className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
             Tools
           </SidebarGroupLabel>
           <SidebarGroupContent>
@@ -631,9 +579,11 @@ export function AppSidebar() {
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-auto w-full justify-start gap-3 px-2">
-              <Avatar className="h-8 w-8">
+              <Avatar className="h-8 w-8 ring-2 ring-primary/20">
                 <AvatarImage src={(user as any)?.avatarUrl} />
-                <AvatarFallback>{user?.name?.charAt(0) ?? "U"}</AvatarFallback>
+                <AvatarFallback className="bg-gradient-to-br from-orange-400 via-pink-500 to-rose-500 text-white text-xs font-semibold">
+                  {user?.name?.charAt(0) ?? "U"}
+                </AvatarFallback>
               </Avatar>
               <div className="flex flex-col items-start text-left">
                 <span className="text-sm font-medium">{user?.name ?? "User"}</span>

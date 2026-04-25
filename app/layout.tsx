@@ -37,7 +37,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" 
-    // className="dark"
+    className="dark"
     >
       <body className={`${inter.variable} font-sans antialiased`}>
         <AuthShell>{children}</AuthShell>

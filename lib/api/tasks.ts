@@ -104,6 +104,7 @@ export interface CreateTaskPayload {
   storyPoints?: number;
   timeEstimateHours?: number;
   planStart?: string;         // "YYYY-MM-DD"
+  planFinish?: string;        // "YYYY-MM-DD"
   durationDays?: number;
   deadline?: string;          // ISO datetime
   tags?: string[];
@@ -120,6 +121,7 @@ export interface UpdateTaskPayload {
   storyPoints?: number | null;
   timeEstimateHours?: number | null;
   planStart?: string | null;
+  planFinish?: string | null;
   durationDays?: number | null;
   deadline?: string | null;
   tags?: string[];
@@ -235,6 +237,7 @@ export const tasksApi = {
   create:       (data: CreateTaskPayload) => api.post<ApiTaskDetail>("/tasks", data),
   update:       (id: string, data: UpdateTaskPayload) => api.put<ApiTaskDetail>(`/tasks/${id}`, data),
   updateStatus: (id: string, data: UpdateTaskStatusPayload) => api.patch<ApiTaskDetail>(`/tasks/${id}/status`, data),
+  move:         (id: string, toListId: string) => api.patch<ApiTaskDetail>(`/tasks/${id}/move`, { toListId }),
   reorder:      (data: ReorderTasksPayload) => api.put<null>("/tasks/reorder", data),
   delete:       (id: string) => api.delete<null>(`/tasks/${id}`),
   addTime:      (id: string, minutes: number) => api.put<ApiTaskDetail>(`/tasks/${id}`, { accumulatedMinutes: minutes }),

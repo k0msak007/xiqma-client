@@ -120,7 +120,8 @@ export function TaskCard({ task, onClick, isSelected, variant = "board", onUpdat
   };
 
   const priorityInfo = priorityConfig[task.priority];
-  const isOverdue = task.dueDate && new Date(task.dueDate) < new Date();
+  const isCompletedForOverdue = !!((task as any).completedAt ?? (task as any).completed_at);
+  const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && !isCompletedForOverdue;
 
   const completedSubtasks = task.subtasks.filter((s) => s.completed).length;
   const totalSubtasks = task.subtasks.length;

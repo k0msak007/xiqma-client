@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { format } from "date-fns";
-import { Calendar as CalendarIcon, Play, Square, MoreHorizontal, UserPlus, Check, Flag, TrendingUp, TrendingDown, Minus, Timer, AlertCircle } from "lucide-react";
+import { Calendar as CalendarIcon, Play, Square, MoreHorizontal, UserPlus, Check, Flag, TrendingUp, TrendingDown, Minus, Timer, AlertCircle, Clock } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -250,8 +250,21 @@ const variance = useMemo(() => {
     return { color: "text-muted-foreground bg-muted border-transparent", icon: Minus, label: "On track" };
   };
 
-  const isCompleted = status?.type === "completed" || status?.type === "closed";
+  // Single source of truth: completedAt (set/cleared by DB trigger on status change)
+  // Optimistic override so badge updates immediately on status change.
+  const [optimisticCompletedAt, setOptimisticCompletedAt] = useState<Date | null | undefined>(undefined);
+  const taskCompletedAtRaw = (task as any).completedAt ?? (task as any).completed_at ?? null;
+  useEffect(() => { setOptimisticCompletedAt(undefined); }, [taskCompletedAtRaw]);
+  const completedAtRaw = optimisticCompletedAt !== undefined ? optimisticCompletedAt : taskCompletedAtRaw;
+  const isCompleted = !!completedAtRaw;
   const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && !isCompleted;
+  const lateDays = (() => {
+    if (!isCompleted || !task.dueDate) return 0;
+    const due = new Date(task.dueDate); due.setHours(0, 0, 0, 0);
+    const done = new Date(completedAtRaw); done.setHours(0, 0, 0, 0);
+    const diff = Math.round((done.getTime() - due.getTime()) / (1000 * 60 * 60 * 24));
+    return diff > 0 ? diff : 0;
+  })();
   const varianceMeta = getVarianceMeta(variance);
   const VarianceIcon = varianceMeta.icon;
 
@@ -308,11 +321,16 @@ const variance = useMemo(() => {
               >
                 {task.title}
               </span>
-              {(task.tags?.length > 0 || isOverdue) && (
+              {(task.tags?.length > 0 || isOverdue || lateDays > 0) && (
                 <div className="mt-0.5 flex items-center gap-1">
                   {isOverdue && (
                     <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-red-600">
                       <AlertCircle className="h-2.5 w-2.5" /> OVERDUE
+                    </span>
+                  )}
+                  {!isOverdue && lateDays > 0 && (
+                    <span className="inline-flex items-center gap-0.5 rounded bg-muted/70 px-1 text-[9px] font-semibold text-muted-foreground">
+                      <Clock className="h-2.5 w-2.5" /> เสร็จล่าช้า {lateDays} วัน
                     </span>
                   )}
                   {task.tags?.slice(0, 2).map(t => (
@@ -328,7 +346,14 @@ const variance = useMemo(() => {
 
         {/* Status — colored pill */}
         <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
-          <Select value={task.statusId} onValueChange={(v) => handleUpdate({ statusId: v })}>
+          <Select value={task.statusId} onValueChange={(v) => {
+            const TERMINAL = ["done","completed","closed","cancelled"];
+            const next = statuses.find((s) => s.id === v);
+            const nextTerminal = !!next && TERMINAL.includes(String(next.type ?? "").toLowerCase());
+            if (nextTerminal && !taskCompletedAtRaw) setOptimisticCompletedAt(new Date());
+            else if (!nextTerminal && taskCompletedAtRaw) setOptimisticCompletedAt(null);
+            handleUpdate({ statusId: v });
+          }}>
             <SelectTrigger
               className="h-6 w-[108px] border-0 px-2 text-[11px] font-semibold shadow-none focus:ring-0 hover:brightness-95"
               style={{

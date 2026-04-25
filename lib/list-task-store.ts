@@ -236,14 +236,38 @@ export const useListTaskStore = create<ListTaskStore>((set, get) => ({
   },
 
   updateTaskStatus: async (taskId, listStatusId) => {
-    // Optimistic update
+    // Optimistic: infer completedAt from new status type (terminal vs not)
+    const TERMINAL = ["done", "completed", "closed", "cancelled"];
+    const targetStatus = get().statuses.find((s) => s.id === listStatusId);
+    const targetTerminal = !!targetStatus && TERMINAL.includes(String(targetStatus.type ?? "").toLowerCase());
     set((s) => ({
-      tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, statusId: listStatusId } : t)),
+      tasks: s.tasks.map((t) => {
+        if (t.id !== taskId) return t;
+        const wasTerminal = !!t.completedAt;
+        let nextCompletedAt = t.completedAt;
+        if (targetTerminal && !wasTerminal) nextCompletedAt = new Date();
+        else if (!targetTerminal && wasTerminal) nextCompletedAt = undefined;
+        return { ...t, statusId: listStatusId, completedAt: nextCompletedAt, actualFinish: nextCompletedAt };
+      }),
     }));
     try {
-      await tasksApi.updateStatus(taskId, { listStatusId });
+      const updated = await tasksApi.updateStatus(taskId, { listStatusId });
+      // Sync with authoritative server timestamps (completed_at from DB trigger).
+      const completedAtRaw = (updated as any)?.completed_at ?? (updated as any)?.completedAt ?? null;
+      const startedAtRaw   = (updated as any)?.started_at   ?? (updated as any)?.startedAt   ?? null;
+      set((s) => ({
+        tasks: s.tasks.map((t) =>
+          t.id === taskId
+            ? {
+                ...t,
+                completedAt: completedAtRaw ? new Date(completedAtRaw) : undefined,
+                actualFinish: completedAtRaw ? new Date(completedAtRaw) : undefined,
+                actualStart: startedAtRaw ? new Date(startedAtRaw) : t.actualStart,
+              }
+            : t
+        ),
+      }));
     } catch {
-      // Rollback on failure by reloading
       const listId = get().currentListId;
       if (listId) get().loadListTasks(listId);
       toast.error("เปลี่ยน status ไม่สำเร็จ");

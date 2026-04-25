@@ -29,6 +29,10 @@ import {
   History,
   RotateCcw,
   AlertCircle,
+  FileText,
+  ArrowRightLeft,
+  FolderKanban,
+  ListTodo,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -73,7 +77,9 @@ import { useTaskStore } from "@/lib/store";
 import {
   calculatePlanFinish,
   calculatePlanProgress,
+  calculatePlanProgressWorkDays,
 } from "@/lib/types";
+import { performanceConfigApi } from "@/lib/api/performance-config";
 import { useTranslation } from "@/lib/i18n";
 import { tasksApi, type ApiTaskDetail } from "@/lib/api/tasks";
 import { commentsApi, type Comment as ApiComment } from "@/lib/api/comments";
@@ -83,6 +89,7 @@ import { reworkApi, type ReworkEvent } from "@/lib/api/rework";
 import { toast } from "sonner";
 import { listsApi, type ListStatus } from "@/lib/api/lists";
 import { useAuthStore } from "@/lib/auth-store";
+import { useWorkspaceStore } from "@/lib/workspace-store";
 
 export default function TaskViewPage() {
   const router = useRouter();
@@ -135,6 +142,15 @@ export default function TaskViewPage() {
   const [reworkReason, setReworkReason] = useState("");
   const [isSavingRework, setIsSavingRework] = useState(false);
   const [showReworkHistory, setShowReworkHistory] = useState(false);
+
+  // Assignee's work_days (for Plan Progress calc)
+  const [assigneeWorkDays, setAssigneeWorkDays] = useState<number[]>([1, 2, 3, 4, 5]);
+
+  // Move task to another list (admin/manager only)
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
+  const [moveTargetListId, setMoveTargetListId] = useState<string>("");
+  const [isMoving, setIsMoving] = useState(false);
+  const { spaces, folders, lists, loadWorkspace } = useWorkspaceStore();
 
   // Get current user from auth store
   const user = useAuthStore((s) => s.user);
@@ -425,6 +441,17 @@ export default function TaskViewPage() {
   const taskAssigneeId = task ? ((task as any).assigneeId || (task as any).assignee_id) : null;
   const canTimer = task && user && (user.role === "admin" || taskAssigneeId === user.id);
 
+  // Load assignee's work_days for Plan Progress calc
+  useEffect(() => {
+    if (!taskAssigneeId) return;
+    performanceConfigApi.getByEmployee(taskAssigneeId)
+      .then((cfg: any) => {
+        const wd = cfg?.work_days && cfg.work_days.length > 0 ? cfg.work_days : [1, 2, 3, 4, 5];
+        setAssigneeWorkDays(wd);
+      })
+      .catch(() => setAssigneeWorkDays([1, 2, 3, 4, 5]));
+  }, [taskAssigneeId]);
+
   // If loading, show loading state
   if (loading) {
     return (
@@ -465,11 +492,11 @@ export default function TaskViewPage() {
   const planStart = planStartStr ? new Date(planStartStr) : null;
   const planFinishStr = task.planFinish || (task as any).plan_finish;
   const durationDays = task.durationDays ?? (task as any).duration_days ?? undefined;
-  // Prefer planStart + duration for consistency with list/table views.
-  const planFinish = planStart && durationDays
-    ? calculatePlanFinish(planStart, Number(durationDays)) ?? null
-    : (planFinishStr ? new Date(planFinishStr) : null);
-  const planProgress = planStart && planFinish ? calculatePlanProgress(planStart, planFinish) : 0;
+  // Prefer server-provided plan_finish (respects work_days); fall back to naive calc.
+  const planFinish = planFinishStr
+    ? new Date(planFinishStr)
+    : (planStart && durationDays ? calculatePlanFinish(planStart, Number(durationDays)) ?? null : null);
+  const planProgress = planStart && planFinish ? calculatePlanProgressWorkDays(planStart, planFinish, assigneeWorkDays) : 0;
 
   // Handle snake_case from API
   const createdAt = (task as any).createdAt || (task as any).created_at;
@@ -564,6 +591,30 @@ export default function TaskViewPage() {
       });
   };
 
+  const canMove = user?.role === "admin" || user?.role === "manager";
+
+  const handleMoveTask = async () => {
+    if (!task || !moveTargetListId) return;
+    setIsMoving(true);
+    try {
+      await tasksApi.move(task.id, moveTargetListId);
+      const updated = await tasksApi.get(task.id);
+      setTask(updated);
+      const listId = updated.listId || (updated as any).list_id;
+      if (listId) {
+        const statuses = await listsApi.getStatuses(listId);
+        setStatusesFromApi(statuses);
+      }
+      toast.success(language === "th" ? "ย้าย task สำเร็จ" : "Task moved");
+      setShowMoveDialog(false);
+      setMoveTargetListId("");
+    } catch (err: any) {
+      toast.error(err?.message ?? (language === "th" ? "ย้ายไม่สำเร็จ" : "Failed to move"));
+    } finally {
+      setIsMoving(false);
+    }
+  };
+
   const handleStatusChange = (statusId: string) => {
     if (!statusId || !task) return;
     tasksApi.updateStatus(task.id, { listStatusId: statusId })
@@ -594,22 +645,64 @@ export default function TaskViewPage() {
 
   return (
     <div className="flex flex-col gap-6 p-6 max-w-5xl mx-auto">
-      {/* Header */}
-      <header className="flex items-start gap-4">
-        <Button variant="ghost" size="icon" onClick={() => router.back()}>
-          <ArrowLeft className="h-5 w-5" />
-        </Button>
-        <div className="flex-1">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
-            <span className="font-mono">{task.displayId}</span>
-            {listNameDisplay && (
-              <>
-                <span>•</span>
-                <span>{listNameDisplay}</span>
-              </>
-            )}
+      {/* Header — hero */}
+      <header className="relative overflow-hidden rounded-2xl border border-border/60 bg-gradient-to-br from-rose-50/80 via-orange-50/60 to-amber-50/40 p-5 shadow-sm dark:from-rose-950/20 dark:via-orange-950/15 dark:to-amber-950/10">
+        <div className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-gradient-to-br from-rose-300/40 to-pink-300/30 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-20 -left-16 h-44 w-44 rounded-full bg-gradient-to-tr from-amber-200/40 to-orange-200/30 blur-3xl" />
+        <div className="relative flex items-start gap-3">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => router.back()}
+            className="bg-white/70 backdrop-blur hover:bg-white dark:bg-card/60 dark:hover:bg-card"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+          <div className="flex-1 min-w-0">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className="border-rose-300/60 bg-white/70 font-mono text-[11px] text-rose-700 backdrop-blur dark:border-rose-500/30 dark:bg-card/60 dark:text-rose-300">
+                {task.displayId || (task as any).display_id}
+              </Badge>
+              {listNameDisplay && (
+                <Badge variant="outline" className="border-border/60 bg-white/70 text-[11px] backdrop-blur dark:bg-card/60">
+                  {listNameDisplay}
+                </Badge>
+              )}
+              {(status?.name || task.statusName) && (
+                <Badge
+                  className="border-0 text-[11px] font-medium shadow-sm"
+                  style={{
+                    backgroundColor: `${status?.color || "#6b7280"}20`,
+                    color: status?.color || "#6b7280",
+                  }}
+                >
+                  <span
+                    className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full"
+                    style={{ backgroundColor: status?.color || "#6b7280" }}
+                  />
+                  {status?.name || task.statusName}
+                </Badge>
+              )}
+            </div>
+            <h1 className="text-2xl font-semibold leading-tight tracking-tight md:text-3xl">
+              {task.title}
+            </h1>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight">{task.title}</h1>
+          {canMove && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                loadWorkspace();
+                setMoveTargetListId("");
+                setShowMoveDialog(true);
+              }}
+              className="bg-white/70 backdrop-blur hover:bg-white dark:bg-card/60 dark:hover:bg-card"
+            >
+              <ArrowRightLeft className="mr-1.5 h-3.5 w-3.5" />
+              {language === "th" ? "ย้าย List" : "Move"}
+            </Button>
+          )}
         </div>
       </header>
 
@@ -617,9 +710,13 @@ export default function TaskViewPage() {
         {/* Main Content */}
         <div className="lg:col-span-2 space-y-6">
           {/* Description */}
-          <Card>
+          <Card className="relative overflow-hidden border-border/60 transition hover:shadow-md hover:shadow-rose-500/5">
+            <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-rose-400 to-pink-500" />
             <CardHeader>
-              <CardTitle className="text-base">
+              <CardTitle className="text-base flex items-center gap-2">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-300">
+                  <FileText className="h-3.5 w-3.5" />
+                </div>
                 {language === "th" ? "รายละเอียด" : "Description"}
               </CardTitle>
             </CardHeader>
@@ -635,10 +732,14 @@ export default function TaskViewPage() {
           </Card>
 
           {/* Progress Section */}
-          <Card>
+          <Card className="relative overflow-hidden border-border/60 transition hover:shadow-md hover:shadow-emerald-500/5">
+            <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-emerald-400 to-teal-500" />
             <CardHeader className="flex flex-row items-center justify-between">
               <div>
-                <CardTitle className="text-base">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-300">
+                    <TrendingUp className="h-3.5 w-3.5" />
+                  </div>
                   {language === "th" ? "ความคืบหน้า" : "Progress"}
                 </CardTitle>
                 <CardDescription>
@@ -686,12 +787,15 @@ export default function TaskViewPage() {
           </Card>
 
           {/* Subtasks — full CRUD */}
-          <Card>
+          <Card className="relative overflow-hidden border-border/60 transition hover:shadow-md hover:shadow-orange-500/5">
+            <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-orange-400 to-amber-500" />
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
-                <CheckSquare className="h-4 w-4" />
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-orange-50 text-orange-600 dark:bg-orange-950/40 dark:text-orange-300">
+                  <CheckSquare className="h-3.5 w-3.5" />
+                </div>
                 {language === "th" ? "งานย่อย" : "Subtasks"}
-                <Badge variant="secondary">
+                <Badge variant="secondary" className="ml-auto">
                   {subtasks.filter((s) => s.isDone).length}/{subtasks.length}
                 </Badge>
               </CardTitle>
@@ -781,12 +885,15 @@ export default function TaskViewPage() {
           </Card>
 
           {/* Comments Section */}
-          <Card>
+          <Card className="relative overflow-hidden border-border/60 transition hover:shadow-md hover:shadow-fuchsia-500/5">
+            <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-fuchsia-400 to-purple-500" />
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
-                <MessageSquare className="h-4 w-4" />
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-fuchsia-50 text-fuchsia-600 dark:bg-fuchsia-950/40 dark:text-fuchsia-300">
+                  <MessageSquare className="h-3.5 w-3.5" />
+                </div>
                 {language === "th" ? "Comments" : "Comments"}
-                <Badge variant="secondary">{comments.length}</Badge>
+                <Badge variant="secondary" className="ml-auto">{comments.length}</Badge>
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -964,13 +1071,49 @@ export default function TaskViewPage() {
         {/* Sidebar */}
         <div className="space-y-4">
           {/* Details Card */}
-          <Card>
+          <Card className="relative overflow-hidden border-border/60 lg:sticky lg:top-4">
+            <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary via-pink-500 to-rose-500" />
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
+              <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {language === "th" ? "รายละเอียด" : "Details"}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* Status — top, most frequently changed */}
+              <div className="space-y-2 rounded-lg border border-primary/20 bg-gradient-to-br from-rose-50/60 to-pink-50/40 p-3 dark:border-primary/30 dark:from-rose-950/20 dark:to-pink-950/10">
+                <Label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ backgroundColor: status?.color || "#6b7280" }}
+                  />
+                  {language === "th" ? "สถานะ" : "Status"}
+                </Label>
+                {statusesFromApi.length > 0 ? (
+                  <Select
+                    value={task.listStatusId || (task as any).list_status_id || ""}
+                    onValueChange={handleStatusChange}
+                  >
+                    <SelectTrigger className="h-9 bg-white font-medium dark:bg-card">
+                      <SelectValue placeholder={task.statusName || task.status || "Select status"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {statusesFromApi.map((s) => (
+                        <SelectItem key={s.id} value={s.id}>
+                          <div className="flex items-center gap-2">
+                            <div className="h-2 w-2 rounded-full" style={{ backgroundColor: s.color }} />
+                            {s.name}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    {status?.name || task.statusName || task.status}
+                  </div>
+                )}
+              </div>
+
               {/* Assignee - API has single assignee */}
               <div className="space-y-2">
                 <Label className="text-xs text-muted-foreground flex items-center gap-1">
@@ -979,12 +1122,14 @@ export default function TaskViewPage() {
                 </Label>
                 <div className="flex flex-wrap gap-2">
                   {assigneeName ? (
-                    <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-muted">
-                      <Avatar className="h-5 w-5">
+                    <div className="flex items-center gap-2 rounded-full border border-rose-200/60 bg-gradient-to-r from-rose-50 to-pink-50 px-2 py-1 dark:border-rose-500/20 dark:from-rose-950/30 dark:to-pink-950/20">
+                      <Avatar className="h-5 w-5 ring-2 ring-white dark:ring-card">
                         <AvatarImage src={assigneeAvatar ?? undefined} />
-                        <AvatarFallback className="text-[10px]">{assigneeName.charAt(0)}</AvatarFallback>
+                        <AvatarFallback className="bg-gradient-to-br from-orange-400 via-pink-500 to-rose-500 text-[10px] font-semibold text-white">
+                          {assigneeName.charAt(0)}
+                        </AvatarFallback>
                       </Avatar>
-                      <span className="text-xs">{assigneeName}</span>
+                      <span className="text-xs font-medium">{assigneeName}</span>
                     </div>
                   ) : (
                     <span className="text-sm text-muted-foreground">-</span>
@@ -1297,10 +1442,10 @@ export default function TaskViewPage() {
                   {language === "th" ? "วันที่" : "Dates"}
                 </Label>
                 <div className="space-y-1 text-sm">
-                  {task.planStart && (
+                  {planStart && (
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Plan Start:</span>
-                      <span>{format(new Date(task.planStart), "d MMM yyyy", { locale })}</span>
+                      <span>{format(planStart, "d MMM yyyy", { locale })}</span>
                     </div>
                   )}
                   {planFinish && (
@@ -1309,10 +1454,10 @@ export default function TaskViewPage() {
                       <span>{format(planFinish, "d MMM yyyy", { locale })}</span>
                     </div>
                   )}
-                  {task.durationDays && (
+                  {(task.durationDays ?? (task as any).duration_days) && (
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Duration:</span>
-                      <span>{task.durationDays} {language === "th" ? "วัน" : "days"}</span>
+                      <span>{task.durationDays ?? (task as any).duration_days} {language === "th" ? "วัน" : "days"}</span>
                     </div>
                   )}
                   {task.deadline && (
@@ -1353,40 +1498,6 @@ export default function TaskViewPage() {
                 </div>
               )}
 
-              {/* Status - use API statuses for dropdown */}
-              <div className="space-y-2">
-                <Label className="text-xs text-muted-foreground">
-                  {language === "th" ? "สถานะ" : "Status"}
-                </Label>
-                {statusesFromApi.length > 0 ? (
-                  <Select 
-                    value={task.listStatusId || (task as any).list_status_id || ""} 
-                    onValueChange={handleStatusChange}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder={task.statusName || task.status || "Select status"} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {statusesFromApi.map((s) => (
-                        <SelectItem key={s.id} value={s.id}>
-                          <div className="flex items-center gap-2">
-                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: s.color }} />
-                            {s.name}
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    {status && (
-                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: status.color }} />
-                    )}
-                    <span className="text-sm">{status?.name || task.statusName || task.status}</span>
-                  </div>
-                )}
-              </div>
-
               <Separator />
 
               {/* Meta */}
@@ -1409,10 +1520,13 @@ export default function TaskViewPage() {
 
           {/* Attachments - API provides count only */}
           {task.attachmentCount > 0 && (
-            <Card>
+            <Card className="relative overflow-hidden border-border/60">
+              <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-sky-400 to-indigo-500" />
               <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-                  <Paperclip className="h-3 w-3" />
+                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                  <div className="flex h-6 w-6 items-center justify-center rounded-md bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-300">
+                    <Paperclip className="h-3 w-3" />
+                  </div>
                   {language === "th" ? "ไฟล์แนบ" : "Attachments"}
                   <Badge variant="secondary" className="ml-auto">{task.attachmentCount}</Badge>
                 </CardTitle>
@@ -1487,6 +1601,115 @@ export default function TaskViewPage() {
       </Dialog>
 
       {/* Rework dialog */}
+      {/* Move Task Dialog — admin/manager only */}
+      <Dialog open={showMoveDialog} onOpenChange={setShowMoveDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ArrowRightLeft className="h-4 w-4 text-primary" />
+              {language === "th" ? "ย้าย Task ไปยัง List อื่น" : "Move Task to Another List"}
+            </DialogTitle>
+            <DialogDescription>
+              {language === "th"
+                ? "สถานะจะถูกตั้งเป็นค่าเริ่มต้นของ list ปลายทาง"
+                : "Status will be reset to the target list's default."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2 max-h-[60vh] overflow-y-auto">
+            {spaces.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                {language === "th" ? "ไม่มี space" : "No spaces available"}
+              </p>
+            ) : (
+              spaces.map((space) => {
+                const spaceLists = lists.filter(
+                  (l) => l.spaceId === space.id && l.id !== (task?.listId || (task as any)?.list_id)
+                );
+                const spaceFolders = folders.filter((f) => f.spaceId === space.id && !f.isArchived);
+                if (spaceLists.length === 0) return null;
+                return (
+                  <div key={space.id} className="space-y-1">
+                    <div className="flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      <span
+                        className="inline-block h-2 w-2 rounded-full"
+                        style={{ backgroundColor: space.color }}
+                      />
+                      {space.name}
+                    </div>
+                    {/* Lists inside folders */}
+                    {spaceFolders.map((folder) => {
+                      const listsInFolder = spaceLists.filter((l) => l.folderId === folder.id);
+                      if (listsInFolder.length === 0) return null;
+                      return (
+                        <div key={folder.id} className="ml-3 space-y-0.5">
+                          <div className="flex items-center gap-1.5 px-1 py-0.5 text-xs text-muted-foreground">
+                            <FolderKanban className="h-3 w-3" style={{ color: folder.color || space.color }} />
+                            {folder.name}
+                          </div>
+                          {listsInFolder.map((list) => (
+                            <button
+                              key={list.id}
+                              type="button"
+                              onClick={() => setMoveTargetListId(list.id)}
+                              className={cn(
+                                "ml-4 flex w-[calc(100%-1rem)] items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-sm transition",
+                                moveTargetListId === list.id
+                                  ? "border-primary bg-primary/5 ring-1 ring-primary"
+                                  : "border-border/60 hover:bg-muted"
+                              )}
+                            >
+                              <ListTodo className="h-3.5 w-3.5 text-muted-foreground" />
+                              <span className="flex-1 truncate">{list.name}</span>
+                              {list.taskCount > 0 && (
+                                <span className="text-xs text-muted-foreground">{list.taskCount}</span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })}
+                    {/* Lists without folder */}
+                    {spaceLists.filter((l) => !l.folderId).map((list) => (
+                      <button
+                        key={list.id}
+                        type="button"
+                        onClick={() => setMoveTargetListId(list.id)}
+                        className={cn(
+                          "ml-3 flex w-[calc(100%-0.75rem)] items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-sm transition",
+                          moveTargetListId === list.id
+                            ? "border-primary bg-primary/5 ring-1 ring-primary"
+                            : "border-border/60 hover:bg-muted"
+                        )}
+                      >
+                        <ListTodo className="h-3.5 w-3.5 text-muted-foreground" />
+                        <span className="flex-1 truncate">{list.name}</span>
+                        {list.taskCount > 0 && (
+                          <span className="text-xs text-muted-foreground">{list.taskCount}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowMoveDialog(false)} disabled={isMoving}>
+              {language === "th" ? "ยกเลิก" : "Cancel"}
+            </Button>
+            <Button
+              onClick={handleMoveTask}
+              disabled={!moveTargetListId || isMoving}
+              className="bg-gradient-to-r from-orange-500 via-pink-500 to-rose-500 text-white hover:from-orange-600 hover:via-pink-600 hover:to-rose-600"
+            >
+              {isMoving
+                ? (language === "th" ? "กำลังย้าย..." : "Moving...")
+                : (language === "th" ? "ย้าย" : "Move")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={showReworkDialog} onOpenChange={setShowReworkDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>

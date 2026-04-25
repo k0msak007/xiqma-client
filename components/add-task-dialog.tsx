@@ -10,6 +10,7 @@ import {
   FileIcon,
   Trash2,
   Link2,
+  Star,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -249,7 +250,10 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
       timeEstimateHours:
         totalEstimateMinutes > 0 ? totalEstimateMinutes / 60 : undefined,
       planStart: planStart
-        ? planStart.toISOString().split("T")[0]
+        ? format(planStart, "yyyy-MM-dd")
+        : undefined,
+      planFinish: planFinish
+        ? format(planFinish, "yyyy-MM-dd")
         : undefined,
       durationDays: duration ? parseInt(duration) : undefined,
       deadline: dueDate ? dueDate.toISOString() : undefined,
@@ -319,13 +323,13 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
 
           <Separator />
 
-          {/* Status, Task Type & Priority Row */}
-          <div className="grid grid-cols-3 gap-4">
+          {/* Status, Task Type, Priority & Story Points Row */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
             {/* Status */}
             <div className="space-y-2">
               <Label>Status</Label>
               <Select value={statusId} onValueChange={setStatusId}>
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue placeholder="Select status..." />
                 </SelectTrigger>
                 <SelectContent>
@@ -353,23 +357,27 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
                   setTaskTypeId(v === "none" ? undefined : v)
                 }
               >
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue placeholder="Select type..." />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">No Type</SelectItem>
                   {filteredTaskTypes.map((tt) => (
                     <SelectItem key={tt.id} value={tt.id}>
-                      <div className="flex items-center gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
                         <div
-                          className="h-2 w-2 rounded-full"
+                          className="h-2 w-2 shrink-0 rounded-full"
                           style={{ backgroundColor: tt.color }}
                         />
-                        {tt.name}
+                        <span className="truncate">{tt.name}</span>
                         {tt.countsForPoints && (
-                          <Badge variant="outline" className="ml-auto text-[10px]">
-                            +Pts
-                          </Badge>
+                          <span
+                            className="ml-1 inline-flex shrink-0 items-center gap-0.5 rounded px-1 text-[10px] text-amber-600 dark:text-amber-400"
+                            title="งานประเภทนี้นับเข้าคะแนนผลงาน"
+                            aria-label="นับคะแนน"
+                          >
+                            <Star className="h-2.5 w-2.5 fill-current" />
+                          </span>
                         )}
                       </div>
                     </SelectItem>
@@ -385,7 +393,7 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
                 value={priority}
                 onValueChange={(v) => setPriority(v as Priority)}
               >
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -403,28 +411,28 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
                 </SelectContent>
               </Select>
             </div>
-          </div>
 
-          {/* Story Points */}
-          <div className="space-y-2">
-            <Label>Story Points</Label>
-            <Select
-              value={storyPoints?.toString() || ""}
-              onValueChange={(v) =>
-                setStoryPoints(v ? (parseInt(v) as StoryPoints) : undefined)
-              }
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Select story points..." />
-              </SelectTrigger>
-              <SelectContent>
-                {storyPointsOptions.map((points) => (
-                  <SelectItem key={points} value={points.toString()}>
-                    {points} {points === 1 ? "point" : "points"}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {/* Story Points */}
+            <div className="space-y-2">
+              <Label>Story Points</Label>
+              <Select
+                value={storyPoints?.toString() || ""}
+                onValueChange={(v) =>
+                  setStoryPoints(v ? (parseInt(v) as StoryPoints) : undefined)
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {storyPointsOptions.map((points) => (
+                    <SelectItem key={points} value={points.toString()}>
+                      {points} {points === 1 ? "point" : "points"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           {/* Predecessors */}
@@ -484,26 +492,34 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
               <Clock className="h-4 w-4" />
               Time Estimate
             </Label>
-            <div className="flex items-center gap-2">
-              <Input
-                type="number"
-                min="0"
-                value={timeEstimateHours}
-                onChange={(e) => setTimeEstimateHours(e.target.value)}
-                placeholder="0"
-                className="w-20"
-              />
-              <span className="text-sm text-muted-foreground">hours</span>
-              <Input
-                type="number"
-                min="0"
-                max="59"
-                value={timeEstimateMinutes}
-                onChange={(e) => setTimeEstimateMinutes(e.target.value)}
-                placeholder="0"
-                className="w-20"
-              />
-              <span className="text-sm text-muted-foreground">minutes</span>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="relative">
+                <Input
+                  type="number"
+                  min="0"
+                  value={timeEstimateHours}
+                  onChange={(e) => setTimeEstimateHours(e.target.value)}
+                  placeholder="0"
+                  className="pr-14"
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">
+                  hours
+                </span>
+              </div>
+              <div className="relative">
+                <Input
+                  type="number"
+                  min="0"
+                  max="59"
+                  value={timeEstimateMinutes}
+                  onChange={(e) => setTimeEstimateMinutes(e.target.value)}
+                  placeholder="0"
+                  className="pr-16"
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">
+                  minutes
+                </span>
+              </div>
             </div>
           </div>
 
@@ -512,7 +528,7 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
           {/* Duration & Plan Dates */}
           <div className="space-y-4">
             <Label className="text-base font-medium">Planning</Label>
-            <div className="grid grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
               {/* Duration */}
               <div className="space-y-2">
                 <Label>Duration (days)</Label>
@@ -616,7 +632,7 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
             <Label>
               Assignee <span className="text-destructive">*</span>
             </Label>
-<div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2">
               {employeesLoading ? (
                 <p className="text-sm text-muted-foreground">Loading employees...</p>
               ) : employeesError ? (

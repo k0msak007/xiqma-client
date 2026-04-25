@@ -237,11 +237,10 @@ function AnalyticsPageInner() {
       tasksApi.calendar(start, end),
       performanceConfigApi.getMe().catch(() => null),    // ถ้ายังไม่มี config ไม่ error
     ])
-      .then(([empRes, calTasks, config]) => {
-        // Backend returns: { success, message, data: { rows: Employee[] } }
-        const empData = empRes as unknown as { rows?: Employee[] };
-        const empList = empData?.rows || [];
-        setEmployees(empList);
+      .then(([empList, calTasks, config]) => {
+        // employeesApi.listAll() already unwraps to Employee[] (handles both array and { rows } shapes).
+        // Backend scopes by role: admin/hr = all, manager = team + self, employee = self only.
+        setEmployees(Array.isArray(empList) ? empList : []);
         setApiTasks(calTasks);
         setPerfConfig(config);
       })

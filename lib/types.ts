@@ -221,6 +221,39 @@ export function calculatePlanProgress(planStart: Date | undefined, planFinish: D
   return Math.min(100, Math.max(0, progress));
 }
 
+// Plan Progress (work-days basis). Counts only working days between start..finish.
+// If workDays not provided, falls back to calendar-day calculation.
+export function calculatePlanProgressWorkDays(
+  planStart: Date | undefined,
+  planFinish: Date | undefined,
+  workDays?: number[],
+): number {
+  if (!planStart || !planFinish) return 0;
+  if (!workDays || workDays.length === 0) return calculatePlanProgress(planStart, planFinish);
+
+  const start = new Date(planStart); start.setHours(0, 0, 0, 0);
+  const end   = new Date(planFinish); end.setHours(0, 0, 0, 0);
+  const today = new Date();            today.setHours(0, 0, 0, 0);
+  if (end.getTime() < start.getTime()) return 0;
+  if (today.getTime() < start.getTime()) return 0;
+
+  const wd = workDays;
+  const capped = today.getTime() > end.getTime() ? end : today;
+
+  // Total working days in [start, end]
+  let total = 0, elapsed = 0, guard = 0;
+  const cursor = new Date(start);
+  while (cursor.getTime() <= end.getTime() && guard++ < 3660) {
+    if (wd.includes(jsDowToIso(cursor.getDay()))) {
+      total++;
+      if (cursor.getTime() <= capped.getTime()) elapsed++;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  if (total === 0) return 0;
+  return Math.min(100, Math.max(0, (elapsed / total) * 100));
+}
+
 // Helper function to calculate Actual Progress: (TimeSpent / TimeEstimate) * 100
 export function calculateActualProgress(timeSpent: number | undefined, timeEstimate: number | undefined): number {
   if (!timeSpent || !timeEstimate || timeEstimate === 0) return 0;
