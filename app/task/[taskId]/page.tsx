@@ -90,6 +90,8 @@ import { toast } from "sonner";
 import { listsApi, type ListStatus } from "@/lib/api/lists";
 import { useAuthStore } from "@/lib/auth-store";
 import { useWorkspaceStore } from "@/lib/workspace-store";
+import { spacesApi } from "@/lib/api/spaces";
+import { MentionTextarea, type MentionEmployee } from "@/components/mention-textarea";
 
 export default function TaskViewPage() {
   const router = useRouter();
@@ -145,6 +147,9 @@ export default function TaskViewPage() {
 
   // Assignee's work_days (for Plan Progress calc)
   const [assigneeWorkDays, setAssigneeWorkDays] = useState<number[]>([1, 2, 3, 4, 5]);
+
+  // Mention candidates (space members) for @-autocomplete
+  const [mentionCandidates, setMentionCandidates] = useState<MentionEmployee[]>([]);
 
   // Move task to another list (admin/manager only)
   const [showMoveDialog, setShowMoveDialog] = useState(false);
@@ -451,6 +456,22 @@ export default function TaskViewPage() {
       })
       .catch(() => setAssigneeWorkDays([1, 2, 3, 4, 5]));
   }, [taskAssigneeId]);
+
+  // Load space members for @-mention autocomplete
+  useEffect(() => {
+    const spaceId = (task as any)?.spaceId ?? (task as any)?.space_id;
+    if (!spaceId) return;
+    spacesApi.get(spaceId)
+      .then((detail) => {
+        const list: MentionEmployee[] = (detail.members ?? []).map((m: any) => ({
+          id:        m.employee?.id ?? m.employeeId,
+          name:      m.employee?.name ?? "Unknown",
+          avatarUrl: m.employee?.avatarUrl ?? null,
+        }));
+        setMentionCandidates(list);
+      })
+      .catch(() => setMentionCandidates([]));
+  }, [task]);
 
   // If loading, show loading state
   if (loading) {
@@ -904,10 +925,11 @@ export default function TaskViewPage() {
                   <AvatarFallback>{currentUser?.name?.charAt(0) || "?"}</AvatarFallback>
                 </Avatar>
                 <div className="flex-1 space-y-2">
-                  <Textarea
-                    placeholder={language === "th" ? "เขียน comment... (Ctrl+Enter เพื่อส่ง)" : "Write a comment... (Ctrl+Enter to send)"}
+                  <MentionTextarea
+                    placeholder={language === "th" ? "เขียน comment... (พิมพ์ @ เพื่อ mention · Ctrl+Enter เพื่อส่ง)" : "Write a comment... (type @ to mention · Ctrl+Enter to send)"}
                     value={newComment}
-                    onChange={(e) => setNewComment(e.target.value)}
+                    onChange={setNewComment}
+                    employees={mentionCandidates}
                     onKeyDown={(e) => {
                       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
                         e.preventDefault();

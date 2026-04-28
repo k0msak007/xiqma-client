@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Bell, CheckCheck, Loader2 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
@@ -19,8 +19,9 @@ import {
 } from "@/lib/api/notifications";
 import { useAuthStore } from "@/lib/auth-store";
 import { toast } from "sonner";
+import { NotificationDetailDialog } from "@/components/notification-detail-dialog";
 
-const POLL_MS = 60_000;
+const POLL_MS = 30_000;
 
 export function NotificationsBell() {
   const isAuthed = useAuthStore((s) => !!s.user);
@@ -28,14 +29,32 @@ export function NotificationsBell() {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [marking, setMarking] = useState(false);
+  const [detail, setDetail]   = useState<NotificationItem | null>(null);
 
   const unreadCount = items.filter((n) => !n.isRead).length;
+  const seenIdsRef  = useRef<Set<string>>(new Set());
+  const isFirstLoadRef = useRef(true);
 
   const load = useCallback(async () => {
     if (!isAuthed) return;
     setLoading(true);
     try {
       const rows = await notificationsApi.list({ limit: 20 });
+
+      // Detect newly arrived notifications (after first load) → toast
+      if (!isFirstLoadRef.current) {
+        const newOnes = rows.filter((n) => !seenIdsRef.current.has(n.id) && !n.isRead);
+        for (const n of newOnes.slice(0, 3)) {
+          toast.message(n.title ?? n.message ?? "การแจ้งเตือนใหม่", {
+            description: n.message && n.message !== n.title ? n.message : undefined,
+            duration: 5000,
+          });
+        }
+      }
+      // Update seen set
+      seenIdsRef.current = new Set(rows.map((n) => n.id));
+      isFirstLoadRef.current = false;
+
       setItems(rows);
     } catch {
       // silent — bell shouldn't break UI
@@ -45,10 +64,30 @@ export function NotificationsBell() {
   }, [isAuthed]);
 
   useEffect(() => {
-    if (!isAuthed) return;
+    if (!isAuthed) {
+      // reset state on logout
+      seenIdsRef.current = new Set();
+      isFirstLoadRef.current = true;
+      return;
+    }
     load();
     const id = setInterval(load, POLL_MS);
-    return () => clearInterval(id);
+
+    // Refresh on tab focus / visibility return
+    const onFocus = () => load();
+    const onVisibility = () => { if (!document.hidden) load(); };
+    // Cross-component sync: any page that mutates notifications can dispatch this
+    const onChange = () => load();
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("notifications-changed", onChange);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("notifications-changed", onChange);
+    };
   }, [isAuthed, load]);
 
   const markOne = async (n: NotificationItem) => {
@@ -141,23 +180,42 @@ export function NotificationsBell() {
           ) : (
             <div className="divide-y">
               {items.map((n) => (
-                <NotifRow key={n.id} n={n} onClick={() => markOne(n)} onClose={() => setOpen(false)} />
+                <NotifRow
+                  key={n.id}
+                  n={n}
+                  onClick={() => markOne(n)}
+                  onClose={() => setOpen(false)}
+                  onShowDetail={(item) => { setDetail(item); markOne(item); setOpen(false); }}
+                />
               ))}
             </div>
           )}
         </ScrollArea>
 
         <Separator />
-        <div className="px-3 py-2">
+        <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
           <Link
             href="/notifications"
             onClick={() => setOpen(false)}
-            className="block w-full text-center text-xs font-medium text-primary hover:underline"
+            className="font-medium text-primary hover:underline"
           >
-            View all notifications
+            View all
+          </Link>
+          <Link
+            href="/settings/notifications"
+            onClick={() => setOpen(false)}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            ตั้งค่าการแจ้งเตือน
           </Link>
         </div>
       </PopoverContent>
+
+      <NotificationDetailDialog
+        notification={detail}
+        onOpenChange={(o) => !o && setDetail(null)}
+        onMarkRead={(n) => { markOne(n); }}
+      />
     </Popover>
   );
 }
@@ -166,10 +224,12 @@ function NotifRow({
   n,
   onClick,
   onClose,
+  onShowDetail,
 }: {
   n: NotificationItem;
   onClick: () => void;
   onClose: () => void;
+  onShowDetail: (n: NotificationItem) => void;
 }) {
   const body = (
     <div
@@ -184,7 +244,7 @@ function NotifRow({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground/70">{n.notifType}</span>
+          <span className="font-medium text-foreground/70">{prettyType(n.notifType)}</span>
           {n.taskDisplayId && (
             <>
               <span>·</span>
@@ -192,9 +252,12 @@ function NotifRow({
             </>
           )}
         </div>
-        <p className="mt-0.5 line-clamp-2 text-sm">
-          {n.message ?? n.taskTitle ?? "—"}
-        </p>
+        {n.title && <p className="mt-0.5 line-clamp-1 text-sm font-medium">{n.title}</p>}
+        {(n.message && n.message !== n.title) && (
+          <p className={cn("line-clamp-2 text-xs text-muted-foreground", !n.title && "mt-0.5 text-sm text-foreground")}>
+            {n.message}
+          </p>
+        )}
         <p className="mt-1 text-[11px] text-muted-foreground">
           {formatDistanceToNow(new Date(n.createdAt), { addSuffix: true })}
         </p>
@@ -202,12 +265,46 @@ function NotifRow({
     </div>
   );
 
-  if (n.taskId) {
+  // If notification has a meaningful deep link → navigate via Link.
+  // Otherwise → open the detail dialog with full content.
+  const meaningfulDeepLink =
+    n.deepLink && n.deepLink !== "/" && n.deepLink !== "";
+  const href = meaningfulDeepLink
+    ? n.deepLink!
+    : (n.taskId ? `/task/${n.taskId}` : null);
+
+  if (href) {
     return (
-      <Link href={`/task/${n.taskId}`} onClick={onClose}>
+      <Link href={href} onClick={onClose}>
         {body}
       </Link>
     );
   }
-  return body;
+  // Fallback — open detail dialog instead of doing nothing
+  return (
+    <div onClick={() => onShowDetail(n)}>
+      {body}
+    </div>
+  );
+}
+
+function prettyType(t: string): string {
+  switch (t) {
+    case "assigned":           return "งานใหม่";
+    case "task_completed":     return "งานเสร็จ";
+    case "comment_mention":    return "@ คุณ";
+    case "comment_reply":      return "ตอบ comment";
+    case "rework_requested":   return "ส่งกลับแก้ไข";
+    case "extension_request":  return "ขอขยายเวลา";
+    case "extension_approved": return "อนุมัติขยายเวลา";
+    case "extension_rejected": return "ปฏิเสธขยายเวลา";
+    case "leave_request":      return "ขอลา";
+    case "leave_approved":     return "อนุมัติลา";
+    case "leave_rejected":     return "ปฏิเสธลา";
+    case "due_reminder":       return "ใกล้กำหนด";
+    case "overdue":            return "เกินกำหนด";
+    case "daily_summary":      return "สรุปประจำวัน";
+    case "announcement":       return "ประกาศ";
+    default:                   return t;
+  }
 }

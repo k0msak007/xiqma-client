@@ -30,6 +30,8 @@ import {
   GanttChart,
   Loader2,
   Trash2,
+  FileText,
+  Sun,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkspaceStore } from "@/lib/workspace-store";
@@ -97,6 +99,7 @@ const mainNavItems: NavItem[] = [
   { label: "Home", icon: Home, href: "/" },
   { label: "My Tasks", icon: CheckCircle2, href: "/my-tasks" },
   { label: "My Calendar", icon: Calendar, href: "/my-calendar" },
+  { label: "Daily Standup", icon: Sun, href: "/standups" },
   { label: "Search", icon: Search, href: "/search" },
 ];
 
@@ -105,6 +108,7 @@ const toolNavItems: NavItem[] = [
   { label: "Time Sheet", icon: Clock, href: "/timesheet", requires: ["view_tasks"] },
   { label: "Gantt Chart", icon: GanttChart, href: "/gantt", requires: ["view_tasks"] },
   { label: "Analytics", icon: BarChart3, href: "/analytics", requires: ["view_analytics"] },
+  { label: "Reports", icon: FileText, href: "/reports", requires: ["view_analytics", "manage_users"] },
   { label: "Settings", icon: Settings, href: "/settings", requires: ["manage_users", "manage_roles", "manage_workspace", "view_analytics"] },
 ];
 

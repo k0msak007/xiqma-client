@@ -14,6 +14,7 @@ import {
   Calendar as CalendarIcon,
   Users,
   X,
+  Sparkles,
 } from "lucide-react";
 import { format } from "date-fns";
 import { Calendar } from "@/components/ui/calendar";
@@ -44,6 +45,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TaskDetail } from "@/components/task-detail";
 import { KanbanBoard } from "@/components/kanban-board";
 import { AddTaskDialog } from "@/components/add-task-dialog";
+import { ExtractTasksDialog } from "@/components/extract-tasks-dialog";
 import { AddStatusDialog } from "@/components/add-status-dialog";
 import { TaskTableRow } from "@/components/task-table-row";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -88,6 +90,7 @@ export default function ListPage({ params }: PageProps) {
   const [sortBy, setSortBy] = useState<"created" | "due" | "priority" | "planStart">("created");
   const [groupBy, setGroupBy] = useState<GroupByOption>("none");
   const [showAddTaskDialog, setShowAddTaskDialog] = useState(false);
+  const [showExtractDialog, setShowExtractDialog] = useState(false);
   const [showAddStatusDialog, setShowAddStatusDialog] = useState(false);
   const [addTaskStatusId, setAddTaskStatusId] = useState<string | null>(null);
 
@@ -362,6 +365,16 @@ export default function ListPage({ params }: PageProps) {
             </div>
 
             <div className="flex items-center gap-2">
+              {user?.role === "admin" && (
+                <Button
+                  onClick={() => setShowExtractDialog(true)}
+                  variant="outline"
+                  className="border-violet-200 bg-gradient-to-r from-violet-50 to-fuchsia-50 text-violet-700 hover:from-violet-100 hover:to-fuchsia-100 hover:text-violet-800 dark:border-violet-500/30 dark:from-violet-950/30 dark:to-fuchsia-950/20 dark:text-violet-300"
+                >
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  สร้างจาก Notes
+                </Button>
+              )}
               <Button
                 onClick={() => setShowAddTaskDialog(true)}
                 className="bg-gradient-to-r from-primary to-primary/90 shadow-md shadow-primary/20 transition-all hover:shadow-lg hover:shadow-primary/30 hover:brightness-110"
@@ -705,6 +718,15 @@ export default function ListPage({ params }: PageProps) {
         listId={id}
         defaultStatusId={addTaskStatusId || undefined}
         onSuccess={() => loadListTasks(id)}
+      />
+
+      {/* Extract Tasks from Notes (admin only — gated at trigger) */}
+      <ExtractTasksDialog
+        open={showExtractDialog}
+        onOpenChange={setShowExtractDialog}
+        listId={id}
+        defaultStatusId={statuses[0]?.id}
+        onCreated={() => loadListTasks(id)}
       />
 
       {/* Add Status Dialog */}

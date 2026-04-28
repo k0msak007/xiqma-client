@@ -14,6 +14,8 @@ import {
   CircleDot,
   Target,
   History,
+  Bell,
+  Sun,
 } from "lucide-react";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useTranslation } from "@/lib/i18n";
@@ -142,6 +144,39 @@ function SettingsPageInner() {
           : "Configure API tokens for Line and other chatbots",
       color: "#06b6d4",
       requires: ["manage_workspace"],
+    },
+    {
+      href: "/settings/bot-schedules",
+      icon: Bot,
+      title: language === "th" ? "Bot Schedules" : "Bot Schedules",
+      description:
+        language === "th"
+          ? "ตั้งข้อความ AI ส่งให้พนักงานเป็นรอบ — daily summary / reminder / etc."
+          : "Configure recurring AI bot messages",
+      color: "#a855f7",
+      requires: ["manage_workspace"],
+    },
+    {
+      href: "/settings/standup",
+      icon: Sun,
+      title: language === "th" ? "Daily Standup" : "Daily Standup",
+      description:
+        language === "th"
+          ? "ตั้งเวลา / วันที่ส่ง standup AI ระดับองค์กร"
+          : "Schedule org-wide AI standup generation",
+      color: "#fb923c",
+      requires: ["manage_workspace"],
+    },
+    {
+      href: "/settings/notifications",
+      icon: Bell,
+      title: language === "th" ? "การแจ้งเตือน" : "Notifications",
+      description:
+        language === "th"
+          ? "เลือกช่องทางและช่วงเงียบ — ใครๆ ก็ตั้งของตัวเองได้"
+          : "Channels + quiet hours — every user can configure their own",
+      color: "#fb7185",
+      requires: [], // anyone authenticated
     },
     {
       href: "/settings/audit-logs",

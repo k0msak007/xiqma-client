@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { tokenManager } from "@/lib/token";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -85,4 +86,83 @@ export const reportsApi = {
     month?: number;
   } = {}): Promise<MonthlyHrReportResult> =>
     api.get<MonthlyHrReportResult>(`/reports/monthly-hr${buildQuery(params)}`),
+
+  // ── Per-employee report (admin/manager) ──────────────────────────────────────
+  /** GET /reports/employee/:id?from=&to= — JSON สรุปผลงาน */
+  employee: (employeeId: string, from: string, to: string): Promise<EmployeeReport> =>
+    api.get<EmployeeReport>(`/reports/employee/${employeeId}?from=${from}&to=${to}`),
+
+  /** GET /reports/employee/:id/export — download Excel (returns Blob) */
+  exportEmployee: async (employeeId: string, from: string, to: string): Promise<Blob> => {
+    const baseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000/api";
+    const token = tokenManager.getAccessToken();
+    const res = await fetch(
+      `${baseUrl}/reports/employee/${employeeId}/export?from=${from}&to=${to}`,
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+    );
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+    return await res.blob();
+  },
+
+  /** POST /reports/employee/:id/ai-summary — AI narrative */
+  aiSummary: (employeeId: string, body: { from: string; to: string; language?: "th" | "en"; refresh?: boolean }) =>
+    api.post<{ text: string; model: string; cached: boolean }>(`/reports/employee/${employeeId}/ai-summary`, body),
+
+  // ── Team-wide (one click for everyone the caller can see) ────────────────
+  /** GET /reports/team/export — single .xlsx with overview + per-member sheets */
+  exportTeam: async (from: string, to: string): Promise<Blob> => {
+    const baseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000/api";
+    const token = tokenManager.getAccessToken();
+    const res = await fetch(
+      `${baseUrl}/reports/team/export?from=${from}&to=${to}`,
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+    );
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+    return await res.blob();
+  },
+
+  /** POST /reports/team/ai-summary — team-level AI narrative */
+  teamAiSummary: (body: { from: string; to: string; language?: "th" | "en"; refresh?: boolean }) =>
+    api.post<{ text: string; model: string; cached: boolean; memberCount: number }>(`/reports/team/ai-summary`, body),
 };
+
+// ── Types for per-employee report ──────────────────────────────────────────────
+export interface EmployeeReport {
+  employee: {
+    id: string;
+    name: string;
+    code: string | null;
+    avatarUrl: string | null;
+    role: string | null;
+    workSchedule: string | null;
+  };
+  range: { from: string; to: string };
+  tasks: {
+    total: number;
+    completed: number;
+    overdue: number;
+    inProgress: number;
+    cancelled: number;
+    onTimeRate: number;
+    completedLate: number;
+    avgLateDays: number;
+    reworkTotal: number;
+    storyPointsCompleted: number;
+  };
+  time: {
+    totalMinutes: number;
+    sessions: number;
+    perDay: Array<{ day: string; minutes: number }>;
+  };
+  topTasks: Array<{
+    id: string;
+    displayId: string | null;
+    title: string;
+    statusName: string | null;
+    statusColor: string | null;
+    completedAt: string | null;
+    deadline: string | null;
+    durationMin: number;
+    reworkCount: number;
+  }>;
+}

@@ -5,6 +5,11 @@ export interface NotificationItem {
   taskId: string | null;
   notifType: string;
   message: string | null;
+  title: string | null;
+  deepLink: string | null;
+  relatedType: string | null;
+  relatedId: string | null;
+  actorId: string | null;
   isRead: boolean;
   readAt: string | null;
   createdAt: string;
@@ -27,6 +32,17 @@ function buildQuery(params: ListNotificationsParams = {}) {
   return s ? `?${s}` : "";
 }
 
+export interface NotificationPref {
+  eventType: string;
+  channel:   "in_app" | "line" | "email";
+  enabled:   boolean;
+}
+
+export interface QuietHours {
+  start: string; // "HH:MM"
+  end:   string;
+}
+
 export const notificationsApi = {
   list: (params?: ListNotificationsParams) =>
     api.get<NotificationItem[]>(`/notifications${buildQuery(params)}`),
@@ -36,4 +52,13 @@ export const notificationsApi = {
 
   markAllRead: () =>
     api.patch<{ updated: number }>(`/notifications/read-all`, {}),
+
+  // Preferences
+  getPrefs:    () => api.get<NotificationPref[]>(`/notifications/prefs`),
+  updatePrefs: (items: NotificationPref[]) =>
+    api.put<NotificationPref[]>(`/notifications/prefs`, { items }),
+
+  getQuietHours: () => api.get<QuietHours | null>(`/notifications/quiet-hours`),
+  setQuietHours: (start: string, end: string) =>
+    api.put<QuietHours>(`/notifications/quiet-hours`, { start, end }),
 };

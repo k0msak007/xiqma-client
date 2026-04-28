@@ -17,12 +17,14 @@ import {
   type NotificationItem,
 } from "@/lib/api/notifications";
 import { toast } from "sonner";
+import { NotificationDetailDialog } from "@/components/notification-detail-dialog";
 
 type Filter = "all" | "unread";
 
 export default function NotificationsPage() {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
+  const [detail, setDetail] = useState<NotificationItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [marking, setMarking] = useState(false);
 
@@ -47,6 +49,12 @@ export default function NotificationsPage() {
 
   const unreadCount = items.filter((n) => !n.isRead).length;
 
+  const notifyChanged = () => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("notifications-changed"));
+    }
+  };
+
   const markOne = async (n: NotificationItem) => {
     if (n.isRead) return;
     setItems((prev) =>
@@ -54,6 +62,7 @@ export default function NotificationsPage() {
     );
     try {
       await notificationsApi.markRead(n.id);
+      notifyChanged();
     } catch {
       setItems((prev) =>
         prev.map((x) => (x.id === n.id ? { ...x, isRead: false } : x)),
@@ -68,6 +77,7 @@ export default function NotificationsPage() {
       await notificationsApi.markAllRead();
       toast.success("ทำเครื่องหมายว่าอ่านทั้งหมดแล้ว");
       await load();
+      notifyChanged();
     } catch {
       toast.error("ทำเครื่องหมายไม่สำเร็จ");
     } finally {
@@ -127,17 +137,34 @@ export default function NotificationsPage() {
           ) : (
             <div className="divide-y">
               {items.map((n) => (
-                <Row key={n.id} n={n} onMark={() => markOne(n)} />
+                <Row
+                  key={n.id}
+                  n={n}
+                  onMark={() => markOne(n)}
+                  onShowDetail={() => { setDetail(n); markOne(n); }}
+                />
               ))}
             </div>
           )}
         </CardContent>
       </Card>
+
+      <NotificationDetailDialog
+        notification={detail}
+        onOpenChange={(o) => !o && setDetail(null)}
+        onMarkRead={(n) => markOne(n)}
+      />
     </div>
   );
 }
 
-function Row({ n, onMark }: { n: NotificationItem; onMark: () => void }) {
+function Row({
+  n, onMark, onShowDetail,
+}: {
+  n: NotificationItem;
+  onMark: () => void;
+  onShowDetail: () => void;
+}) {
   const content = (
     <div
       className={cn(
@@ -173,6 +200,15 @@ function Row({ n, onMark }: { n: NotificationItem; onMark: () => void }) {
     </div>
   );
 
+  // Routing precedence:
+  //   1. meaningful deepLink → navigate
+  //   2. taskId → /task/<id>
+  //   3. fallback → open detail dialog (instead of dead click)
+  const meaningfulDeepLink =
+    n.deepLink && n.deepLink !== "/" && n.deepLink !== "";
+  if (meaningfulDeepLink) {
+    return <Link href={n.deepLink!}>{content}</Link>;
+  }
   if (n.taskId) return <Link href={`/task/${n.taskId}`}>{content}</Link>;
-  return content;
+  return <div onClick={onShowDetail}>{content}</div>;
 }
