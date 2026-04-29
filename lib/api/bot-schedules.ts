@@ -9,12 +9,12 @@ export interface BotSchedule {
   sendDays:          number[];          // ISO 1..7
   sendDayOfMonth:    number | null;
   audienceType:      "all" | "role" | "employee";
-  audienceValue:     string | null;
+  audienceValues:    string[];
   respectWorkDays:   boolean;
   mode:              "static" | "ai";
   titleTemplate:     string;
   bodyTemplate:      string;
-  contextKind:       "today" | "yesterday" | "week" | "none";
+  contextKind:       "today" | "yesterday" | "week" | "morning_briefing" | "leave_reminder" | "time_reminder" | "none";
   channels:          string[];
   notifType:         string;
   deepLink:          string | null;

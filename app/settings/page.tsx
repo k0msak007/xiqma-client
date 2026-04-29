@@ -10,7 +10,6 @@ import {
   Calendar,
   Building2,
   Bot,
-  MessageSquare,
   CircleDot,
   Target,
   History,
@@ -124,35 +123,13 @@ function SettingsPageInner() {
       requires: ["manage_workspace"],
     },
     {
-      href: "/settings/ai-automate",
-      icon: Bot,
-      title: "AI Automate Task",
-      description:
-        language === "th"
-          ? "ตั้งค่า Bot แจ้งเตือนและติดตามงาน"
-          : "Configure bot alerts and task follow-ups",
-      color: "#ec4899",
-      requires: ["manage_workspace"],
-    },
-    {
-      href: "/settings/ai-chatbot",
-      icon: MessageSquare,
-      title: "AI Chatbot Setup",
-      description:
-        language === "th"
-          ? "ตั้งค่า API Token สำหรับ Line และ Chatbot อื่นๆ"
-          : "Configure API tokens for Line and other chatbots",
-      color: "#06b6d4",
-      requires: ["manage_workspace"],
-    },
-    {
       href: "/settings/bot-schedules",
       icon: Bot,
-      title: language === "th" ? "Bot Schedules" : "Bot Schedules",
+      title: language === "th" ? "Bot & AI Messages" : "Bot & AI Messages",
       description:
         language === "th"
-          ? "ตั้งข้อความ AI ส่งให้พนักงานเป็นรอบ — daily summary / reminder / etc."
-          : "Configure recurring AI bot messages",
+          ? "ตั้ง Bot ส่งข้อความอัตโนมัติ + AI generate เนื้อหา — morning briefing / leave reminder / time reminder / weekly report"
+          : "Auto bot messages + AI content — morning briefing, leave reminder, time nudge, weekly report",
       color: "#a855f7",
       requires: ["manage_workspace"],
     },

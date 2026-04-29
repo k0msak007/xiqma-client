@@ -795,8 +795,8 @@ function AnalyticsPageInner() {
                 <Users className="h-5 w-5 shrink-0" />
                 <p className="text-sm">
                   {language === "th"
-                    ? "เลือกพนักงานจาก dropdown ด้านบนเพื่อดู Target และ Performance % รายบุคคล (ภาพรวมทีมจะไม่แสดงเป้าหมาย เนื่องจากแต่ละคนมี target คนละระดับ)"
-                    : "Select an employee from the dropdown above to view individual Target and Performance %. (Team-wide view hides targets since each person has different goals.)"}
+                    ? "เลือกพนักงานจาก dropdown ด้านบนเพื่อดู Performance รายบุคคล — ถ้ายังไม่เห็นข้อมูล แนะนำให้ไปตั้งค่า Performance Config ก่อนเพื่อกำหนดเป้าหมายต่อคน"
+                    : "Select an employee above to view individual Performance. If you don't see data yet, set up Performance Config first to define per-person targets."}
                 </p>
               </CardContent>
             </Card>
@@ -807,17 +807,19 @@ function AnalyticsPageInner() {
                 <p className="text-sm">
                   {language === "th" ? (
                     <>
-                      ยังไม่ได้ตั้งค่า Performance Config สำหรับพนักงานคนนี้ —{" "}
-                      <a href="/settings/performance" className="text-primary underline">
-                        ไปตั้งค่า
+                      ⚠️ ยังไม่มีการตั้งค่า Performance Config —{" "}
+                      <a href="/settings/performance" className="text-primary underline font-medium">
+                        ไปตั้งค่าเป้าหมาย
                       </a>
+                      {" "}เพื่อดู Performance %
                     </>
                   ) : (
                     <>
-                      Performance Config not set for this employee —{" "}
-                      <a href="/settings/performance" className="text-primary underline">
+                      ⚠️ No Performance Config set up —{" "}
+                      <a href="/settings/performance" className="text-primary underline font-medium">
                         configure now
                       </a>
+                      {" "}to view Performance %
                     </>
                   )}
                 </p>

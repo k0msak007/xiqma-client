@@ -118,6 +118,10 @@ export function AppSidebar() {
   const { hasAny } = usePermission();
 
   const canSee = (item: NavItem) => !item.requires || hasAny(item.requires);
+  const isActivePath = (href: string) => {
+    if (href === "/") return pathname === "/";
+    return pathname.startsWith(href);
+  };
   const visibleMainItems = mainNavItems.filter(canSee);
   const visibleToolItems = toolNavItems.filter(canSee);
 
@@ -199,7 +203,7 @@ export function AppSidebar() {
             <SidebarMenu>
               {visibleMainItems.map((item) => (
                 <SidebarMenuItem key={item.label}>
-                  <SidebarMenuButton asChild isActive={pathname === item.href}>
+                  <SidebarMenuButton asChild isActive={isActivePath(item.href)}>
                     <Link href={item.href}>
                       <item.icon className="h-4 w-4" />
                       <span>{item.label}</span>
@@ -562,7 +566,7 @@ export function AppSidebar() {
             <SidebarMenu>
               {visibleToolItems.map((item) => (
                 <SidebarMenuItem key={item.label}>
-                  <SidebarMenuButton asChild isActive={pathname === item.href}>
+                  <SidebarMenuButton asChild isActive={isActivePath(item.href)}>
                     <Link href={item.href}>
                       <item.icon className="h-4 w-4" />
                       <span>{item.label}</span>

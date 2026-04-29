@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   Bot, Loader2, Plus, Pencil, Trash2, Play, AlertCircle,
-  Sparkles, Clock, Calendar as CalendarIcon, Users, Sun,
+  Sparkles, Clock, Calendar as CalendarIcon, Users, Sun, ChevronDown, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Popover, PopoverContent, PopoverTrigger,
+} from "@/components/ui/popover";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -32,11 +37,14 @@ const DAYS_TH: Array<{ iso: number; label: string }> = [
   { iso: 7, label: "อาทิตย์" },
 ];
 
-const CONTEXT_KINDS: Array<{ value: BotSchedule["contextKind"]; label: string; hint: string }> = [
-  { value: "today",     label: "วันนี้",      hint: "AI ใช้ข้อมูลของวันนี้" },
-  { value: "yesterday", label: "เมื่อวาน",   hint: "AI ใช้ข้อมูลของเมื่อวาน" },
-  { value: "week",      label: "สัปดาห์",    hint: "AI ใช้ข้อมูลย้อนหลัง 7 วัน" },
-  { value: "none",      label: "ไม่ใช้ข้อมูล", hint: "ส่งตามที่เขียนเลย" },
+const CONTEXT_KINDS: Array<{ value: BotSchedule["contextKind"]; label: string; hint: string; detail: string }> = [
+  { value: "today",              label: "วันนี้",           hint: "ข้อมูลของวันนี้",                       detail: "Query tasks + time sessions วันนี้: จำนวนงานค้าง/เสร็จ, ชั่วโมงที่ log, งานเกินกำหนด (ตัวเลข)" },
+  { value: "yesterday",          label: "เมื่อวาน",        hint: "ข้อมูลของเมื่อวาน",                    detail: "Query tasks + time sessions เมื่อวาน: เหมือน today แต่ย้อนหลัง 1 วัน" },
+  { value: "week",               label: "สัปดาห์",         hint: "ข้อมูลย้อนหลัง 7 วัน",                 detail: "Query tasks + time sessions 7 วัน: จำนวนงานปิด, ชั่วโมงรวม, งานเกินกำหนด (ตัวเลข)" },
+  { value: "morning_briefing",   label: "สรุปงานเช้า",     hint: "รายชื่องานใกล้กำหนด",                 detail: "Query tasks: งานเกินกำหนด, งานครบวันนี้, งานครบใน 3 วัน — แสดง display_id, title, deadline" },
+  { value: "leave_reminder",     label: "เตือนวันลา",      hint: "วันลาทีม + โควต้า + รออนุมัติ",        detail: "Query leave_requests + employees + leave_quotas: ใครลาวันนี้/พรุ่งนี้/7วัน, โควต้าคงเหลือของแต่ละคน, ใบลารออนุมัติ (สำหรับหัวหน้า)" },
+  { value: "time_reminder",      label: "เตือน log time",  hint: "ใครยังไม่ได้ log time",                detail: "Query task_time_sessions: log แล้วกี่ชม.วันนี้ หรือยังไม่ได้ log เลย — per employee" },
+  { value: "none",               label: "ไม่ใช้ข้อมูล",    hint: "ไม่ query อะไรเลย",                    detail: "ส่งข้อความตรงตาม template — ไม่มีข้อมูลจาก DB ใดๆ" },
 ];
 
 const blankInput: BotScheduleInput = {
@@ -47,7 +55,7 @@ const blankInput: BotScheduleInput = {
   sendDays:        [1, 2, 3, 4, 5],
   sendDayOfMonth:  null,
   audienceType:    "all",
-  audienceValue:   "",
+  audienceValues:  [],
   respectWorkDays: true,
   mode:            "ai",
   titleTemplate:   "🤖 ข้อความถึงคุณ {{name}}",
@@ -57,6 +65,112 @@ const blankInput: BotScheduleInput = {
   notifType:       "daily_summary",
   deepLink:        "/",
 };
+
+interface MultiSelectOption {
+  value: string;
+  label: string;
+  color?: string;
+}
+
+function MultiSelectPopover({
+  options,
+  selected,
+  onChange,
+  disabled,
+  placeholder,
+}: {
+  options: MultiSelectOption[];
+  selected: string[];
+  onChange: (vals: string[]) => void;
+  disabled?: boolean;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const toggle = (val: string) => {
+    if (selected.includes(val)) {
+      onChange(selected.filter((v) => v !== val));
+    } else {
+      onChange([...selected, val]);
+    }
+  };
+
+  const remove = (val: string) => {
+    onChange(selected.filter((v) => v !== val));
+  };
+
+  const selectedLabels = selected
+    .map((v) => options.find((o) => o.value === v)?.label ?? v)
+    .join(", ");
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          className="flex w-full items-center justify-between gap-1 rounded-md border border-input bg-background px-3 py-2 text-xs shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <span className={selected.length === 0 ? "text-muted-foreground" : ""}>
+            {selected.length === 0 ? placeholder ?? "เลือก..." : `${selected.length} รายการ`}
+          </span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[260px] p-0" side="bottom" sideOffset={4}>
+        {selected.length > 0 && (
+          <div className="flex flex-wrap gap-1 border-b px-2.5 py-2">
+            {selected.map((val) => {
+              const opt = options.find((o) => o.value === val);
+              return (
+                <span
+                  key={val}
+                  className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px]"
+                >
+                  {opt?.label ?? val}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); remove(val); }}
+                    className="ml-0.5 rounded-full p-0.5 hover:bg-muted-foreground/20"
+                  >
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        )}
+        <ScrollArea className="max-h-48">
+          <div className="p-1">
+            {options.length === 0 ? (
+              <div className="px-3 py-4 text-center text-xs text-muted-foreground">ไม่มีข้อมูล</div>
+            ) : (
+              options.map((opt) => {
+                const checked = selected.includes(opt.value);
+                return (
+                  <label
+                    key={opt.value}
+                    className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-accent"
+                  >
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={() => toggle(opt.value)}
+                      disabled={disabled}
+                    />
+                    {opt.color && (
+                      <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: opt.color }} />
+                    )}
+                    <span className="truncate">{opt.label}</span>
+                  </label>
+                );
+              })
+            )}
+          </div>
+        </ScrollArea>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export default function BotSchedulesPage() {
   const { user } = useAuthStore();
@@ -108,10 +222,10 @@ export default function BotSchedulesPage() {
     setEditing(s);
     setForm({
       ...s,
-      sendTime:    s.sendTime.slice(0, 5),
-      audienceValue: s.audienceValue ?? "",
-      description: s.description ?? "",
-      deepLink:    s.deepLink ?? "/",
+      sendTime:       s.sendTime.slice(0, 5),
+      audienceValues: s.audienceValues ?? [],
+      description:    s.description ?? "",
+      deepLink:       s.deepLink ?? "/",
     });
     setCreating(true);
   };
@@ -128,8 +242,8 @@ export default function BotSchedulesPage() {
     try {
       const payload: BotScheduleInput = {
         ...form,
-        audienceValue: form.audienceType === "all" ? null : (form.audienceValue || null),
-        description:   form.description?.trim() || null,
+        audienceValues: form.audienceType === "all" ? [] : form.audienceValues,
+        description:    form.description?.trim() || null,
       };
       if (editing) {
         await botSchedulesApi.update(editing.id, payload);
@@ -259,7 +373,13 @@ export default function BotSchedulesPage() {
                       {s.sendDayOfMonth ? ` · ทุกวันที่ ${s.sendDayOfMonth}` : ""}
                     </span>
                     <span className="inline-flex items-center gap-1"><Users className="h-3 w-3" />
-                      {s.audienceType === "all" ? "ทุกคน" : s.audienceType === "role" ? `role: ${s.audienceValue}` : "เฉพาะคน"}
+                      {s.audienceType === "all"
+                        ? "ทุกคน"
+                        : s.audienceType === "role"
+                          ? `role: ${s.audienceValues?.join(", ") || "—"}`
+                          : s.audienceType === "employee"
+                            ? `${s.audienceValues?.length || 0} คน`
+                            : "ทุกคน"}
                     </span>
                     <span className="inline-flex items-center gap-1">
                       📡 {s.channels.join(" · ")}
@@ -306,6 +426,20 @@ export default function BotSchedulesPage() {
               <code className="rounded bg-muted px-1 text-[10px]">{"{{todayCompleted}}"}</code>{" "}
               <code className="rounded bg-muted px-1 text-[10px]">{"{{todayHours}}"}</code>{" "}
               <code className="rounded bg-muted px-1 text-[10px]">{"{{overdue}}"}</code>
+              <br />
+              <span className="text-[10px]">morning_briefing เพิ่ม: </span>
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{overdueList}}"}</code>{" "}
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{dueTodayList}}"}</code>{" "}
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{dueSoonList}}"}</code>
+              <br />
+              <span className="text-[10px]">leave_reminder เพิ่ม: </span>
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{leaveToday}}"}</code>{" "}
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{leaveQuota}}"}</code>{" "}
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{pendingLeaves}}"}</code>
+              <br />
+              <span className="text-[10px]">time_reminder เพิ่ม: </span>
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{timeLogged}}"}</code>{" "}
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{timeMissing}}"}</code>
             </DialogDescription>
           </DialogHeader>
 
@@ -376,72 +510,45 @@ export default function BotSchedulesPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label className="text-xs">ส่งให้ใคร</Label>
-                <Select value={form.audienceType} onValueChange={(v) => setForm({ ...form, audienceType: v as any, audienceValue: "" })} disabled={!isAdmin}>
+                <Select
+                  value={form.audienceType}
+                  onValueChange={(v) => setForm({ ...form, audienceType: v as any, audienceValues: [] })}
+                  disabled={!isAdmin}
+                >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">ทุกคน</SelectItem>
                     <SelectItem value="role">เฉพาะ role</SelectItem>
-                    <SelectItem value="employee">เฉพาะ 1 คน</SelectItem>
+                    <SelectItem value="employee">เฉพาะคน</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-              {form.audienceType === "role" && (
+              {form.audienceType !== "all" && (
                 <div className="space-y-1.5">
-                  <Label className="text-xs">เลือก role</Label>
-                  <Select
-                    value={form.audienceValue ?? ""}
-                    onValueChange={(v) => setForm({ ...form, audienceValue: v })}
-                    disabled={!isAdmin || roles.length === 0}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder={roles.length === 0 ? "กำลังโหลด..." : "เลือก role"} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {roles.map((r) => (
-                        <SelectItem key={r.id} value={r.name}>
-                          <div className="flex items-center gap-2">
-                            <span
-                              className="inline-block h-2 w-2 rounded-full"
-                              style={{ backgroundColor: r.color }}
-                            />
-                            {r.name}
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-              {form.audienceType === "employee" && (
-                <div className="space-y-1.5">
-                  <Label className="text-xs">เลือกพนักงาน</Label>
-                  <Select
-                    value={form.audienceValue ?? ""}
-                    onValueChange={(v) => setForm({ ...form, audienceValue: v })}
-                    disabled={!isAdmin || employees.length === 0}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder={employees.length === 0 ? "กำลังโหลด..." : "เลือกพนักงาน"} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {employees.map((e) => (
-                        <SelectItem key={e.id} value={e.id}>
-                          <div className="flex items-center gap-2">
-                            <Avatar className="h-5 w-5">
-                              <AvatarImage src={(e as any).avatarUrl ?? undefined} />
-                              <AvatarFallback className="text-[10px]">{e.name.charAt(0)}</AvatarFallback>
-                            </Avatar>
-                            <span>{e.name}</span>
-                            {(e as any).employeeCode && (
-                              <span className="font-mono text-[10px] text-muted-foreground">
-                                {(e as any).employeeCode}
-                              </span>
-                            )}
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label className="text-xs">
+                    {form.audienceType === "role" ? "เลือก role" : "เลือกพนักงาน"}
+                    {form.audienceValues.length > 0 && (
+                      <span className="ml-1 text-primary">({form.audienceValues.length})</span>
+                    )}
+                  </Label>
+                  <MultiSelectPopover
+                    options={
+                      form.audienceType === "role"
+                        ? roles.map((r) => ({ value: r.name, label: r.name, color: r.color }))
+                        : employees.map((e) => ({
+                            value: e.id,
+                            label: `${e.name}${(e as any).employeeCode ? ` (${(e as any).employeeCode})` : ""}`,
+                          }))
+                    }
+                    selected={form.audienceValues}
+                    onChange={(vals) => setForm({ ...form, audienceValues: vals })}
+                    disabled={!isAdmin}
+                    placeholder={
+                      form.audienceType === "role"
+                        ? roles.length === 0 ? "กำลังโหลด..." : "เลือก role..."
+                        : employees.length === 0 ? "กำลังโหลด..." : "เลือกพนักงาน..."
+                    }
+                  />
                 </div>
               )}
             </div>
@@ -473,10 +580,23 @@ export default function BotSchedulesPage() {
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {CONTEXT_KINDS.map((c) => (
-                      <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
+                      <SelectItem key={c.value} value={c.value}>
+                        <span className="font-medium">{c.label}</span>
+                        <span className="ml-2 text-[10px] text-muted-foreground">— {c.hint}</span>
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                {/* Live description of selected context */}
+                {(() => {
+                  const selected = CONTEXT_KINDS.find((c) => c.value === form.contextKind);
+                  return selected ? (
+                    <p className="text-[10px] leading-relaxed text-muted-foreground">
+                      <span className="font-medium text-foreground/60">📂 Query: </span>
+                      {selected.detail}
+                    </p>
+                  ) : null;
+                })()}
               </div>
             </div>
 

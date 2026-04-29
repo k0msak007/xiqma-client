@@ -111,7 +111,6 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
         try {
           const spaceDetail = await spacesApi.get(list.spaceId);
           const members = spaceDetail.members || [];
-          console.log("[AddTaskDialog] Space members loaded:", members.length);
           setEmployees(members.map((m) => ({ 
             id: m.employeeId, 
             name: m.employee.name, 
@@ -137,7 +136,6 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
 
   // Set initial statusId from statuses when dialog opens
   useEffect(() => {
-    console.log("[AddTaskDialog] statuses:", statuses, "statusId:", statusId, "open:", open);
     if (open) {
       if (defaultStatusId && statuses.some(s => s.id === defaultStatusId)) {
         setStatusId(defaultStatusId);
@@ -218,7 +216,6 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
   };
 
   const handleSubmit = async () => {
-    console.log("[AddTaskDialog] Submit clicked", { title, assigneeIds, statusId, statuses: statuses.length });
     
     if (!title.trim()) {
       toast.error("กรุณากรอกชื่อ task");
@@ -264,7 +261,6 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
       Object.assign(payload, { taskTypeId });
     }
 
-    console.log("[AddTaskDialog] Creating task with payload:", payload);
     
     const task = await createTask(payload);
     if (task) {

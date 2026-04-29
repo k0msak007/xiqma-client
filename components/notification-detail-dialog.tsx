@@ -1,12 +1,12 @@
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { format } from "date-fns";
 import { th } from "date-fns/locale";
 import {
-  Bell, CheckCheck, ExternalLink,
+  Bell, CheckCheck, X,
   CheckCircle2, AlertCircle, Clock, MessageSquare, RotateCcw,
-  Sparkles, Sun, Megaphone, FileText, AtSign, ArrowRight,
+  Sun, Megaphone, FileText, AtSign, ArrowRight, ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +16,6 @@ import {
 import { cn } from "@/lib/utils";
 import type { NotificationItem } from "@/lib/api/notifications";
 
-// Event type → icon + accent color (matches LINE/email theme)
 function metaFor(t: string): { icon: React.ComponentType<{ className?: string }>; color: string; label: string } {
   switch (t) {
     case "assigned":           return { icon: ArrowRight,    color: "#FB7185", label: "งานใหม่" };
@@ -46,6 +45,7 @@ interface Props {
 
 export function NotificationDetailDialog({ notification, onOpenChange, onMarkRead }: Props) {
   const open = !!notification;
+  const router = useRouter();
 
   if (!notification) {
     return (
@@ -59,47 +59,53 @@ export function NotificationDetailDialog({ notification, onOpenChange, onMarkRea
   const Icon = meta.icon;
   const color = meta.color;
 
-  const hasMeaningfulDeepLink =
+  const hasDeepLink =
     notification.deepLink && notification.deepLink !== "/" && notification.deepLink !== "";
 
   const handleMarkRead = () => {
     if (!notification.isRead && onMarkRead) onMarkRead(notification);
   };
 
+  const handleOpenLink = () => {
+    onOpenChange(false);
+    if (hasDeepLink) {
+      router.push(notification.deepLink!);
+    } else if (notification.taskId) {
+      router.push(`/task/${notification.taskId}`);
+    }
+  };
+
+  const linkLabel = hasDeepLink
+    ? "เปิดหน้านี้"
+    : notification.taskId
+      ? "ดูงาน"
+      : null;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="overflow-hidden p-0 sm:max-w-md">
-        {/* Header — gradient with event color */}
-        <div
-          className="relative px-6 pb-6 pt-7"
-          style={{
-            background: `linear-gradient(135deg, ${color}22 0%, ${color}0a 60%, transparent 100%)`,
-          }}
-        >
-          <div className="absolute inset-x-0 top-0 h-1" style={{ backgroundColor: color }} />
+      {/* flex + min-h-0 cascade = scroll works */}
+      <DialogContent
+        className="flex max-h-[88vh] flex-col overflow-hidden p-0 sm:max-w-lg"
+        showCloseButton={false}
+      >
+        {/* ── Gradient accent bar ── */}
+        <div className="absolute inset-x-0 top-0 z-10 h-1" style={{ backgroundColor: color }} />
 
-          {/* Decorative blur blob */}
-          <div
-            className="pointer-events-none absolute -right-12 -top-12 h-44 w-44 rounded-full blur-3xl"
-            style={{ backgroundColor: `${color}40` }}
-          />
-
-          <div className="relative flex items-start gap-3">
+        {/* ── Header (shrink-0 → fixed) ── */}
+        <div className="shrink-0 px-5 pb-3 pt-6">
+          <div className="flex items-start gap-3">
             <div
-              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl shadow-lg"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
               style={{
                 background: `linear-gradient(135deg, ${color} 0%, ${color}dd 100%)`,
-                boxShadow: `0 8px 24px ${color}33`,
+                boxShadow: `0 4px 16px ${color}33`,
               }}
             >
-              <Icon className="h-6 w-6 text-white" />
+              <Icon className="h-5 w-5 text-white" />
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge
-                  className="border-0 text-[10px] font-semibold uppercase tracking-wider"
-                  style={{ backgroundColor: `${color}20`, color: color }}
-                >
+            <div className="min-w-0 flex-1 pt-0.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge className="border-0 text-[10px] font-semibold" style={{ backgroundColor: `${color}18`, color }}>
                   {meta.label}
                 </Badge>
                 {notification.taskDisplayId && (
@@ -108,11 +114,11 @@ export function NotificationDetailDialog({ notification, onOpenChange, onMarkRea
                   </Badge>
                 )}
                 {!notification.isRead && (
-                  <Badge variant="secondary" className="text-[10px]">ยังไม่อ่าน</Badge>
+                  <span className="ml-auto h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: color }} />
                 )}
               </div>
-              <DialogHeader className="mt-2">
-                <DialogTitle className="text-left text-lg leading-snug">
+              <DialogHeader className="mt-1">
+                <DialogTitle className="text-left text-sm font-semibold leading-snug line-clamp-2">
                   {notification.title || meta.label}
                 </DialogTitle>
               </DialogHeader>
@@ -120,67 +126,85 @@ export function NotificationDetailDialog({ notification, onOpenChange, onMarkRea
           </div>
         </div>
 
-        {/* Body */}
-        <div className="space-y-4 px-6 pb-2">
-          {notification.message && notification.message !== notification.title && (
-            <div className="rounded-xl border border-border/60 bg-muted/30 p-4 text-sm leading-relaxed">
-              <div className="whitespace-pre-wrap break-words">{notification.message}</div>
-            </div>
-          )}
+        {/* ── Body (flex-1 + min-h-0 + overflow-y-auto → scroll) ── */}
+        <div
+          className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5
+            [&::-webkit-scrollbar]:w-1.5
+            [&::-webkit-scrollbar-track]:bg-transparent
+            [&::-webkit-scrollbar-thumb]:rounded-full
+            [&::-webkit-scrollbar-thumb]:bg-border/60
+            hover:[&::-webkit-scrollbar-thumb]:bg-border"
+          style={{ scrollbarWidth: "thin", scrollbarColor: "hsl(var(--border) / 0.6) transparent" }}
+        >
+          <div className="space-y-3 pb-1">
+            {notification.message && notification.message !== notification.title && (
+              <div className="rounded-lg border border-border/50 bg-muted/20 p-3.5">
+                <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+                  {notification.message}
+                </div>
+              </div>
+            )}
 
-          {/* Meta */}
-          <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
-            <MetaRow label="เกิดขึ้นเมื่อ" value={format(new Date(notification.createdAt), "d MMM yyyy · HH:mm", { locale: th })} />
-            {notification.relatedType && (
-              <MetaRow
-                label="ประเภท"
-                value={
-                  notification.relatedType === "task" ? "งาน" :
-                  notification.relatedType === "comment" ? "Comment" :
-                  notification.relatedType === "leave" ? "ลา" :
-                  notification.relatedType === "extension" ? "ขยายเวลา" :
-                  notification.relatedType
-                }
+            <div className="grid grid-cols-2 gap-1.5">
+              <MetaBlock
+                label="เวลา"
+                value={format(new Date(notification.createdAt), "d MMM yyyy · HH:mm", { locale: th })}
               />
-            )}
-            {notification.isRead && notification.readAt && (
-              <MetaRow label="อ่านเมื่อ" value={format(new Date(notification.readAt), "d MMM HH:mm", { locale: th })} />
-            )}
+              {notification.relatedType && (
+                <MetaBlock
+                  label="เกี่ยวข้องกับ"
+                  value={
+                    notification.relatedType === "task" ? "งาน" :
+                    notification.relatedType === "comment" ? "Comment" :
+                    notification.relatedType === "leave" ? "ลา" :
+                    notification.relatedType === "extension" ? "ขยายเวลา" :
+                    notification.relatedType
+                  }
+                />
+              )}
+              {notification.isRead && notification.readAt && (
+                <MetaBlock
+                  label="อ่านเมื่อ"
+                  value={format(new Date(notification.readAt), "d MMM HH:mm", { locale: th })}
+                />
+              )}
+            </div>
           </div>
         </div>
 
-        <DialogFooter className="flex-col-reverse gap-2 border-t bg-muted/20 px-6 py-3 sm:flex-row sm:items-center sm:justify-between">
-          {!notification.isRead ? (
-            <Button variant="ghost" size="sm" onClick={handleMarkRead}>
-              <CheckCheck className="mr-1.5 h-3.5 w-3.5" />
-              ทำเครื่องหมายว่าอ่านแล้ว
-            </Button>
-          ) : (
-            <span className="text-xs text-muted-foreground">
-              <CheckCheck className="mr-1 inline h-3.5 w-3.5 text-emerald-600" />
-              อ่านแล้ว
-            </span>
-          )}
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
-              ปิด
-            </Button>
-            {hasMeaningfulDeepLink && (
-              <Button
-                size="sm"
-                asChild
-                style={{
-                  background: `linear-gradient(135deg, ${color} 0%, ${color}dd 100%)`,
-                  color: "#fff",
-                }}
-                className={cn("border-0 hover:opacity-90")}
-              >
-                <Link href={notification.deepLink!} onClick={() => onOpenChange(false)}>
-                  <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-                  เปิดหน้านี้
-                </Link>
+        {/* ── Footer (shrink-0 → fixed) ── */}
+        <DialogFooter className="shrink-0 border-t bg-muted/10 px-5 py-2.5">
+          <div className="flex w-full items-center justify-between gap-2">
+            <div>
+              {!notification.isRead ? (
+                <Button variant="ghost" size="sm" onClick={handleMarkRead} className="h-8 gap-1.5 text-xs">
+                  <CheckCheck className="h-3.5 w-3.5 text-muted-foreground" />
+                  อ่านแล้ว
+                </Button>
+              ) : (
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <CheckCheck className="h-3.5 w-3.5 text-emerald-500" />
+                  อ่านแล้ว
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} className="h-8 text-xs">
+                <X className="mr-1 h-3.5 w-3.5" />
+                ปิด
               </Button>
-            )}
+              {linkLabel && (
+                <Button
+                  size="sm"
+                  onClick={handleOpenLink}
+                  className="h-8 text-xs border-0 text-white"
+                  style={{ background: `linear-gradient(135deg, ${color} 0%, ${color}dd 100%)` }}
+                >
+                  <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+                  {linkLabel}
+                </Button>
+              )}
+            </div>
           </div>
         </DialogFooter>
       </DialogContent>
@@ -188,11 +212,11 @@ export function NotificationDetailDialog({ notification, onOpenChange, onMarkRea
   );
 }
 
-function MetaRow({ label, value }: { label: string; value: string }) {
+function MetaBlock({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-2 rounded-md bg-muted/40 px-3 py-1.5 sm:flex-col sm:items-start sm:gap-0">
-      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
-      <span className="text-xs font-medium">{value}</span>
+    <div className="rounded-md bg-muted/30 px-3 py-2">
+      <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</div>
+      <div className="mt-0.5 text-xs font-medium">{value}</div>
     </div>
   );
 }
