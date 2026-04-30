@@ -44,6 +44,7 @@ const CONTEXT_KINDS: Array<{ value: BotSchedule["contextKind"]; label: string; h
   { value: "morning_briefing",   label: "สรุปงานเช้า",     hint: "รายชื่องานใกล้กำหนด",                 detail: "Query tasks: งานเกินกำหนด, งานครบวันนี้, งานครบใน 3 วัน — แสดง display_id, title, deadline" },
   { value: "leave_reminder",     label: "เตือนวันลา",      hint: "วันลาทีม + โควต้า + รออนุมัติ",        detail: "Query leave_requests + employees + leave_quotas: ใครลาวันนี้/พรุ่งนี้/7วัน, โควต้าคงเหลือของแต่ละคน, ใบลารออนุมัติ (สำหรับหัวหน้า)" },
   { value: "time_reminder",      label: "เตือน log time",  hint: "ใครยังไม่ได้ log time",                detail: "Query task_time_sessions: log แล้วกี่ชม.วันนี้ หรือยังไม่ได้ log เลย — per employee" },
+  { value: "weekly_hours",       label: "ตรวจสอบชั่วโมง",  hint: "งานครบชม.ต่อสัปดาห์หรือยัง",          detail: "Query employee_performance_config + work_schedules + tasks + task_time_sessions: target ชม./สัปดาห์, ได้รับงานแล้วกี่ชม. (estimated), log แล้วกี่ชม. — ต่อคน" },
   { value: "none",               label: "ไม่ใช้ข้อมูล",    hint: "ไม่ query อะไรเลย",                    detail: "ส่งข้อความตรงตาม template — ไม่มีข้อมูลจาก DB ใดๆ" },
 ];
 
@@ -64,6 +65,10 @@ const blankInput: BotScheduleInput = {
   channels:        ["in_app"],
   notifType:       "daily_summary",
   deepLink:        "/",
+  sendIntervalType:    "fixed",
+  sendIntervalMinutes: null,
+  sendWindowStart:     null,
+  sendWindowEnd:       null,
 };
 
 interface MultiSelectOption {
@@ -440,6 +445,13 @@ export default function BotSchedulesPage() {
               <span className="text-[10px]">time_reminder เพิ่ม: </span>
               <code className="rounded bg-muted px-1 text-[10px]">{"{{timeLogged}}"}</code>{" "}
               <code className="rounded bg-muted px-1 text-[10px]">{"{{timeMissing}}"}</code>
+              <br />
+              <span className="text-[10px]">weekly_hours เพิ่ม: </span>
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{targetHours}}"}</code>{" "}
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{weekAssignedHours}}"}</code>{" "}
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{weekLoggedHours}}"}</code>{" "}
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{hoursGap}}"}</code>{" "}
+              <code className="rounded bg-muted px-1 text-[10px]">{"{{hoursOk}}"}</code>
             </DialogDescription>
           </DialogHeader>
 
@@ -504,6 +516,86 @@ export default function BotSchedulesPage() {
                   );
                 })}
               </div>
+            </div>
+
+            {/* Interval scheduling — toggle between fixed time and interval */}
+            <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">รูปแบบการส่ง</Label>
+                <div className="flex items-center gap-1 rounded-md bg-background p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setForm({ ...form, sendIntervalType: "fixed" })}
+                    disabled={!isAdmin}
+                    className={cn(
+                      "rounded px-2.5 py-1 text-[11px] font-medium transition",
+                      form.sendIntervalType === "fixed"
+                        ? "bg-primary text-primary-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    เวลาตายตัว
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setForm({ ...form, sendIntervalType: "interval", sendIntervalMinutes: form.sendIntervalMinutes ?? 180, sendWindowStart: form.sendWindowStart ?? "09:00", sendWindowEnd: form.sendWindowEnd ?? "18:00" })}
+                    disabled={!isAdmin}
+                    className={cn(
+                      "rounded px-2.5 py-1 text-[11px] font-medium transition",
+                      form.sendIntervalType === "interval"
+                        ? "bg-primary text-primary-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    ทุกช่วงเวลา
+                  </button>
+                </div>
+              </div>
+
+              {form.sendIntervalType === "interval" && (
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">ทุกๆ</Label>
+                    <Select
+                      value={String(form.sendIntervalMinutes ?? 180)}
+                      onValueChange={(v) => setForm({ ...form, sendIntervalMinutes: Number(v) })}
+                      disabled={!isAdmin}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {[30, 60, 120, 180, 360, 480, 720].map((m) => (
+                          <SelectItem key={m} value={String(m)}>
+                            {m < 60 ? `${m} นาที` : `${m / 60} ชม.`}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">เริ่มเวลา</Label>
+                    <Input
+                      type="time"
+                      value={form.sendWindowStart ?? "09:00"}
+                      onChange={(e) => setForm({ ...form, sendWindowStart: e.target.value })}
+                      disabled={!isAdmin}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">ถึงเวลา</Label>
+                    <Input
+                      type="time"
+                      value={form.sendWindowEnd ?? "18:00"}
+                      onChange={(e) => setForm({ ...form, sendWindowEnd: e.target.value })}
+                      disabled={!isAdmin}
+                    />
+                  </div>
+                </div>
+              )}
+              {form.sendIntervalType === "interval" && (
+                <p className="text-[10px] text-muted-foreground">
+                  ระบบจะรันทุก {form.sendIntervalMinutes} นาที ระหว่าง {form.sendWindowStart}–{form.sendWindowEnd} ในวันที่เลือกด้านบน
+                </p>
+              )}
             </div>
 
             {/* Audience */}

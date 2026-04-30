@@ -11,6 +11,8 @@ import {
   Trash2,
   Link2,
   Star,
+  Sparkles,
+  RotateCcw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -42,6 +44,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
 import { useTaskStore } from "@/lib/store";
@@ -58,6 +61,13 @@ import {
   type StoryPoints,
 } from "@/lib/types";
 import { performanceConfigApi } from "@/lib/api/performance-config";
+import { aiApi } from "@/lib/api/ai";
+import { taskTemplatesApi, type TaskTemplate } from "@/lib/api/task-templates";
+
+const DAYS_TH = [
+  { iso: 1, label: "จันทร์" }, { iso: 2, label: "อังคาร" }, { iso: 3, label: "พุธ" },
+  { iso: 4, label: "พฤหัสบดี" }, { iso: 5, label: "ศุกร์" }, { iso: 6, label: "เสาร์" }, { iso: 7, label: "อาทิตย์" },
+];
 
 interface AddTaskDialogProps {
   open: boolean;
@@ -99,7 +109,19 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
   const [storyPoints, setStoryPoints] = useState<StoryPoints | undefined>();
   const [timeEstimateHours, setTimeEstimateHours] = useState("");
   const [timeEstimateMinutes, setTimeEstimateMinutes] = useState("");
+  const [aiEstimating, setAiEstimating] = useState(false);
   const [predecessorIds, setPredecessorIds] = useState<string[]>([]);
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [recurrenceRule, setRecurrenceRule] = useState<"daily" | "weekly" | "monthly">("weekly");
+  const [recurrenceDays, setRecurrenceDays] = useState<number[]>([1,2,3,4,5]);
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
+
+  // Load templates on dialog open
+  useEffect(() => {
+    if (open) {
+      taskTemplatesApi.list().then(setTemplates).catch(() => {});
+    }
+  }, [open]);
 
   // Load employees (space members) when dialog opens
   useEffect(() => {
@@ -254,6 +276,11 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
         : undefined,
       durationDays: duration ? parseInt(duration) : undefined,
       deadline: dueDate ? dueDate.toISOString() : undefined,
+      ...(isRecurring ? {
+        isRecurring: true,
+        recurrenceRule,
+        recurrenceDays: recurrenceRule === "weekly" ? recurrenceDays : undefined,
+      } : {}),
     };
 
     // Only add taskTypeId if it's a valid UUID format
@@ -291,6 +318,43 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
         </DialogHeader>
 
         <div className="space-y-6 py-4">
+          {/* Template Picker */}
+          {templates.length > 0 && (
+            <div className="space-y-2">
+              <Label className="text-xs">สร้างจาก Template</Label>
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-1.5">
+                {templates.map((tpl) => (
+                  <button
+                    key={tpl.id}
+                    type="button"
+                    onClick={() => {
+                      setTitle(tpl.title);
+                      if (tpl.description) setDescription(tpl.description);
+                      if (tpl.taskTypeId) setTaskTypeId(tpl.taskTypeId);
+                      if (tpl.priority) setPriority(tpl.priority as Priority);
+                      if (tpl.timeEstimateHours) {
+                        const h = Math.floor(tpl.timeEstimateHours);
+                        const m = Math.round((tpl.timeEstimateHours - h) * 60);
+                        setTimeEstimateHours(String(h));
+                        setTimeEstimateMinutes(String(m));
+                      }
+                      if (tpl.storyPoints) setStoryPoints(String(tpl.storyPoints) as any);
+                    }}
+                    className="rounded-md border border-border/60 px-2.5 py-1.5 text-left text-xs transition hover:border-primary/30 hover:bg-primary/5"
+                  >
+                    <div className="font-medium truncate">{tpl.name}</div>
+                    {tpl.priority && (
+                      <div className="mt-0.5 text-[10px] text-muted-foreground">
+                        {tpl.priority === "urgent" ? "🔴" : tpl.priority === "high" ? "🟠" : tpl.priority === "normal" ? "🟢" : "⚪"} {tpl.priority}
+                        {tpl.timeEstimateHours ? ` · ${tpl.timeEstimateHours}h` : ""}
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Task Name */}
           <div className="space-y-2">
             <Label htmlFor="title">
@@ -484,10 +548,48 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
 
           {/* Time Estimate */}
           <div className="space-y-2">
-            <Label className="flex items-center gap-2">
-              <Clock className="h-4 w-4" />
-              Time Estimate
-            </Label>
+            <div className="flex items-center gap-2">
+              <Label className="flex items-center gap-2">
+                <Clock className="h-4 w-4" />
+                Time Estimate
+              </Label>
+              {title.trim() && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={aiEstimating}
+                  onClick={async () => {
+                    setAiEstimating(true);
+                    try {
+                      const result = await aiApi.estimateDuration({
+                        title,
+                        description: description || null,
+                      });
+                      if (result.suggestedHours > 0) {
+                        const h = Math.floor(result.suggestedHours);
+                        const m = Math.round((result.suggestedHours - h) * 60);
+                        setTimeEstimateHours(String(h));
+                        setTimeEstimateMinutes(String(m));
+                        toast.success(
+                          `💡 ประมาณ ${result.suggestedHours} ชม. (จาก ${result.sampleSize} งานคล้ายกัน — range ${result.rangeMin}–${result.rangeMax} ชม.)`
+                        );
+                      } else {
+                        toast.info("ไม่พบงานคล้ายกันในระบบ — ลองใส่เวลาด้วยตัวเอง");
+                      }
+                    } catch (err: any) {
+                      toast.error(err?.message ?? "AI ประเมินไม่ได้ — ลองใหม่");
+                    } finally {
+                      setAiEstimating(false);
+                    }
+                  }}
+                  className="h-6 gap-1 px-1.5 text-[11px] text-violet-600 hover:text-violet-700 hover:bg-violet-50 dark:text-violet-400 dark:hover:bg-violet-950/30"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  {aiEstimating ? "กำลังคิด..." : "AI Estimate"}
+                </Button>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="relative">
                 <Input
@@ -619,6 +721,64 @@ export function AddTaskDialog({ open, onOpenChange, listId, defaultStatusId, onS
                 </Popover>
               </div>
             </div>
+          </div>
+
+          <Separator />
+
+          {/* Recurring */}
+          <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs flex items-center gap-1.5">
+                <RotateCcw className="h-3 w-3" />
+                ทำให้เป็นงาน recurring
+              </Label>
+              <Switch
+                checked={isRecurring}
+                onCheckedChange={(v) => setIsRecurring(!!v)}
+              />
+            </div>
+            {isRecurring && (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <Label className="text-[10px]">รูปแบบ</Label>
+                  <Select value={recurrenceRule} onValueChange={(v) => setRecurrenceRule(v as any)}>
+                    <SelectTrigger className="h-7 text-[11px]"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="daily">ทุกวัน</SelectItem>
+                      <SelectItem value="weekly">ทุกสัปดาห์</SelectItem>
+                      <SelectItem value="monthly">ทุกเดือน</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {recurrenceRule === "weekly" && (
+                  <div className="space-y-1">
+                    <Label className="text-[10px]">วันที่</Label>
+                    <div className="flex flex-wrap gap-0.5">
+                      {DAYS_TH.map((d) => {
+                        const active = recurrenceDays.includes(d.iso);
+                        return (
+                          <button
+                            key={d.iso}
+                            type="button"
+                            onClick={() => {
+                              setRecurrenceDays((prev) =>
+                                active ? prev.filter((x) => x !== d.iso) : [...prev, d.iso].sort()
+                              );
+                            }}
+                            className={cn(
+                              "rounded px-1.5 py-0.5 text-[10px] border transition",
+                              active ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-muted"
+                            )}
+                          >
+                            {d.label.slice(0, 3)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <Separator />

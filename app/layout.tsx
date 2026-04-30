@@ -3,13 +3,14 @@ import { Inter } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthShell } from "@/components/auth-shell";
+import { AiChatFAB } from "@/components/ai-chat-fab";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: "Task Management",
-  description: "A ClickUp-style task management application",
+  title: "Xiqma",
+  description: "AI-powered task management",
   generator: "v0.app",
   icons: {
     icon: [
@@ -42,6 +43,7 @@ export default function RootLayout({
       <body className={`${inter.variable} font-sans antialiased`}>
         <AuthShell>{children}</AuthShell>
         <Toaster />
+        <AiChatFAB />
         <Analytics />
       </body>
     </html>

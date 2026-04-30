@@ -107,6 +107,9 @@ export interface CreateTaskPayload {
   planFinish?: string;        // "YYYY-MM-DD"
   durationDays?: number;
   deadline?: string;          // ISO datetime
+  isRecurring?: boolean;
+  recurrenceRule?: "daily" | "weekly" | "monthly";
+  recurrenceDays?: number[];
   tags?: string[];
   source?: string;
 }
@@ -247,4 +250,6 @@ export const tasksApi = {
   stopTimer:   (id: string) => api.post<{ durationMin: number }>(`/tasks/${id}/time/pause`, {}),
   getTimer:    (id: string) => api.get<{ id: string; taskId: string; startedAt: string; endedAt: string | null }[]>(`/tasks/${id}/time`),
   getRunningTimers: () => api.get<{ id: string; taskId: string; startedAt: string }[]>(`/tasks/time/running`),
+  bulkUpdate: (data: { taskIds: string[]; updates: Record<string, any> }) =>
+    api.post<{ total: number; updated: number; failed: number }>("/tasks/bulk", data),
 };

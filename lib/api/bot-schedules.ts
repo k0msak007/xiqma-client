@@ -14,10 +14,14 @@ export interface BotSchedule {
   mode:              "static" | "ai";
   titleTemplate:     string;
   bodyTemplate:      string;
-  contextKind:       "today" | "yesterday" | "week" | "morning_briefing" | "leave_reminder" | "time_reminder" | "none";
+  contextKind:       "today" | "yesterday" | "week" | "morning_briefing" | "leave_reminder" | "time_reminder" | "weekly_hours" | "none";
   channels:          string[];
   notifType:         string;
   deepLink:          string | null;
+  sendIntervalType:    "fixed" | "interval";
+  sendIntervalMinutes: number | null;
+  sendWindowStart:     string | null;
+  sendWindowEnd:       string | null;
   createdAt:         string;
   updatedAt:         string;
 }

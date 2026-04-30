@@ -67,9 +67,11 @@ interface TaskTableRowProps {
   statuses: Status[];
   onUpdate?: (taskId: string, updates: Partial<Task>) => Promise<void>;
   onDelete?: (taskId: string) => Promise<void>;
+  checked?: boolean;
+  onCheckedChange?: (checked: boolean) => void;
 }
 
-export function TaskTableRow({ task, onClick, isSelected, statuses, onUpdate, onDelete }: TaskTableRowProps) {
+export function TaskTableRow({ task, onClick, isSelected, statuses, onUpdate, onDelete, checked, onCheckedChange }: TaskTableRowProps) {
   const store = useTaskStore();
   const { updateTask: storeUpdateTask, deleteTask, taskTypes } = store;
   const user = useAuthStore((s) => s.user);
@@ -280,6 +282,12 @@ const variance = useMemo(() => {
         )}
         onClick={onClick}
       >
+        {/* Selection checkbox */}
+        {onCheckedChange && (
+          <td className="w-[40px] px-1 py-2.5" onClick={(e) => e.stopPropagation()}>
+            <Checkbox checked={!!checked} onCheckedChange={(v) => onCheckedChange(!!v)} />
+          </td>
+        )}
         {/* Task ID (with priority accent bar) */}
         <td className="relative px-2 py-2.5 text-[11px] text-muted-foreground font-mono" onClick={onClick}>
           <div

@@ -15,6 +15,8 @@ import {
   Users,
   X,
   Sparkles,
+  Bookmark,
+  Trash2,
 } from "lucide-react";
 import { format } from "date-fns";
 import { Calendar } from "@/components/ui/calendar";
@@ -27,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -58,6 +61,7 @@ import { taskTypesApi } from "@/lib/api/task-types";
 import { listsApi } from "@/lib/api/lists";
 import { useAuthStore } from "@/lib/auth-store";
 import { toast } from "sonner";
+import { savedFiltersApi, type SavedFilter } from "@/lib/api/saved-filters";
 import type { ViewType, Priority } from "@/lib/types";
 import type { Task } from "@/lib/types";
 
@@ -93,6 +97,11 @@ export default function ListPage({ params }: PageProps) {
   const [showExtractDialog, setShowExtractDialog] = useState(false);
   const [showAddStatusDialog, setShowAddStatusDialog] = useState(false);
   const [addTaskStatusId, setAddTaskStatusId] = useState<string | null>(null);
+  const [savedFilters, setSavedFilters] = useState<SavedFilter[]>([]);
+  const [savingFilter, setSavingFilter] = useState(false);
+  const [filterDropdownOpen, setFilterDropdownOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkUpdating, setBulkUpdating] = useState(false);
 
   const list = lists.find((l) => l.id === id);
   const view = navigation.activeView;
@@ -100,6 +109,11 @@ export default function ListPage({ params }: PageProps) {
   useEffect(() => {
     loadListTasks(id);
   }, [id, loadListTasks]);
+
+  // Load saved filters
+  useEffect(() => {
+    if (id) savedFiltersApi.list(id).then(setSavedFilters).catch(() => {});
+  }, [id]);
 
   // โหลด task types จริงจาก API (ไม่งั้น store จะใช้ mock id "tasktype-1" ซึ่งไม่ใช่ UUID)
   useEffect(() => {
@@ -562,18 +576,145 @@ export default function ListPage({ params }: PageProps) {
 
             {/* Clear Filters */}
             {hasActiveFilters && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8"
-                onClick={clearFilters}
-              >
+              <Button variant="ghost" size="sm" className="h-8" onClick={clearFilters}>
                 <X className="mr-1 h-3.5 w-3.5" />
                 Clear
               </Button>
             )}
+
+            {/* Saved Views */}
+            <Popover open={filterDropdownOpen} onOpenChange={setFilterDropdownOpen}>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-8 gap-1">
+                  <Bookmark className="h-3.5 w-3.5" />
+                  Views
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-[240px] p-1">
+                <div className="max-h-48 overflow-y-auto">
+                  {savedFilters.length === 0 ? (
+                    <div className="px-2 py-3 text-center text-xs text-muted-foreground">
+                      ยังไม่มีมุมมองที่บันทึกไว้
+                    </div>
+                  ) : (
+                    savedFilters.map((f) => (
+                      <div
+                        key={f.id}
+                        className="flex items-center justify-between gap-1 rounded px-2 py-1.5 hover:bg-muted"
+                      >
+                        <button
+                          type="button"
+                          className="flex-1 text-left text-xs truncate"
+                          onClick={() => {
+                            const cfg = f.config;
+                            if (cfg.searchQuery !== undefined) setSearchQuery(cfg.searchQuery);
+                            if (cfg.filterStatus !== undefined) setFilterStatus(cfg.filterStatus);
+                            if (cfg.filterPriority !== undefined) setFilterPriority(cfg.filterPriority);
+                            if (cfg.filterAssignee !== undefined) setFilterAssignee(cfg.filterAssignee);
+                            if (cfg.sortBy !== undefined) setSortBy(cfg.sortBy);
+                            if (cfg.groupBy !== undefined) setGroupBy(cfg.groupBy);
+                            setFilterDropdownOpen(false);
+                          }}
+                        >
+                          📌 {f.name}
+                        </button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-5 w-5 shrink-0 opacity-40 hover:opacity-100"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            await savedFiltersApi.remove(f.id);
+                            setSavedFilters((prev) => prev.filter((x) => x.id !== f.id));
+                          }}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="border-t pt-1 mt-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 w-full justify-start gap-1 text-xs"
+                    disabled={savingFilter}
+                    onClick={async () => {
+                      const name = prompt("ตั้งชื่อมุมมองนี้:");
+                      if (!name?.trim()) return;
+                      setSavingFilter(true);
+                      try {
+                        const config = {
+                          searchQuery, filterStatus, filterPriority,
+                          filterAssignee, sortBy, groupBy,
+                        };
+                        const created = await savedFiltersApi.create({ name: name.trim(), listId: id, config });
+                        setSavedFilters((prev) => [...prev, created]);
+                        toast.success("บันทึกมุมมองแล้ว");
+                        setFilterDropdownOpen(false);
+                      } catch (err: any) {
+                        toast.error("บันทึกไม่สำเร็จ");
+                      } finally {
+                        setSavingFilter(false);
+                      }
+                    }}
+                  >
+                    <Bookmark className="h-3 w-3" />
+                    Save Current View
+                  </Button>
+                </div>
+              </PopoverContent>
+            </Popover>
           </div>
         </div>
+
+        {/* Bulk action bar */}
+        {selectedIds.size > 0 && (
+          <div className="flex items-center gap-2 bg-primary/10 border-b border-primary/20 px-4 py-2 z-20">
+            <span className="text-sm font-medium">{selectedIds.size} selected</span>
+            <Select
+              onValueChange={async (val) => {
+                setBulkUpdating(true);
+                try {
+                  const ids = Array.from(selectedIds);
+                  if (val === "_delete") {
+                    if (!confirm(`ลบ ${ids.length} task?`)) return;
+                    for (const id of ids) await tasksApi.delete(id);
+                    toast.success(`ลบ ${ids.length} task แล้ว`);
+                  } else {
+                    await tasksApi.bulkUpdate({ taskIds: ids, updates: { listStatusId: val } });
+                    toast.success(`อัปเดต ${ids.length} task แล้ว`);
+                  }
+                  setSelectedIds(new Set());
+                  loadListTasks(id);
+                } catch (err: any) {
+                  toast.error(err?.message ?? "ไม่สำเร็จ");
+                } finally {
+                  setBulkUpdating(false);
+                }
+              }}
+            >
+              <SelectTrigger className="h-7 w-[150px] text-xs">
+                <SelectValue placeholder={bulkUpdating ? "กำลังอัปเดต..." : "Update Status"} />
+              </SelectTrigger>
+              <SelectContent>
+                {statusesFromApi.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                ))}
+                <SelectItem value="_delete" className="text-destructive">🗑️ Delete</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => setSelectedIds(new Set())}
+            >
+              <X className="mr-1 h-3 w-3" /> Clear
+            </Button>
+          </div>
+        )}
 
         {/* Content */}
         <div className="flex-1 overflow-auto">
@@ -632,6 +773,15 @@ export default function ListPage({ params }: PageProps) {
                         <table className="w-full min-w-[1700px]">
                           <thead className="bg-gradient-to-r from-muted/60 via-muted/40 to-muted/60">
                             <tr className="text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                              <th className="p-2 w-[40px]">
+                                <Checkbox
+                                  checked={selectedIds.size === groupTasks.length && groupTasks.length > 0}
+                                  onCheckedChange={(v) => {
+                                    if (v) setSelectedIds(new Set(groupTasks.map((t) => t.id)));
+                                    else setSelectedIds(new Set());
+                                  }}
+                                />
+                              </th>
                               <th className="p-2 w-[80px]">ID</th>
                               <th className="p-2 w-[200px]">Task</th>
                               <th className="p-2 w-[110px]">Status</th>
@@ -658,6 +808,12 @@ export default function ListPage({ params }: PageProps) {
                                 task={task}
                                 onClick={() => setActiveTask(task.id)}
                                 isSelected={task.id === selectedTaskId}
+                                checked={selectedIds.has(task.id)}
+                                onCheckedChange={(v) => {
+                                  const next = new Set(selectedIds);
+                                  if (v) next.add(task.id); else next.delete(task.id);
+                                  setSelectedIds(next);
+                                }}
                                 statuses={statuses}
                                 onUpdate={handleApiUpdate}
                                 onDelete={handleTaskDelete}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { format } from "date-fns";
 import { th, enUS } from "date-fns/locale";
@@ -16,6 +16,8 @@ import {
   Send,
   Pencil,
   Trash2,
+  Upload,
+  File,
   MoreHorizontal,
   Flag,
   Layers,
@@ -86,12 +88,20 @@ import { commentsApi, type Comment as ApiComment } from "@/lib/api/comments";
 import { subtasksApi, type Subtask } from "@/lib/api/subtasks";
 import { timeTrackingApi, type TimeSession } from "@/lib/api/time-tracking";
 import { reworkApi, type ReworkEvent } from "@/lib/api/rework";
+import { attachmentsApi, type Attachment } from "@/lib/api/attachments";
 import { toast } from "sonner";
 import { listsApi, type ListStatus } from "@/lib/api/lists";
 import { useAuthStore } from "@/lib/auth-store";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 import { spacesApi } from "@/lib/api/spaces";
 import { MentionTextarea, type MentionEmployee } from "@/components/mention-textarea";
+import { taskTemplatesApi } from "@/lib/api/task-templates";
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export default function TaskViewPage() {
   const router = useRouter();
@@ -103,6 +113,12 @@ export default function TaskViewPage() {
   const [task, setTask] = useState<ApiTaskDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [savingTemplate, setSavingTemplate] = useState(false);
+
+  // Attachments
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Statuses from API
   const [statusesFromApi, setStatusesFromApi] = useState<ListStatus[]>([]);
@@ -199,6 +215,29 @@ export default function TaskViewPage() {
         });
     }
   }, [taskId]);
+
+  // Load attachments
+  useEffect(() => {
+    if (taskId) {
+      attachmentsApi.list(taskId).then(setAttachments).catch(() => {});
+    }
+  }, [taskId]);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !taskId) return;
+    setUploading(true);
+    try {
+      const uploaded = await attachmentsApi.upload(taskId, file);
+      setAttachments((prev) => [...prev, uploaded]);
+      toast.success(language === "th" ? "อัปโหลดสำเร็จ" : "Uploaded");
+    } catch (err: any) {
+      toast.error(err?.message ?? "อัปโหลดไม่สำเร็จ");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
 
   // Load comments from API
   useEffect(() => {
@@ -703,8 +742,40 @@ export default function TaskViewPage() {
                   />
                   {status?.name || task.statusName}
                 </Badge>
-              )}
-            </div>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={savingTemplate}
+            onClick={async () => {
+              const name = prompt(
+                language === "th" ? "ตั้งชื่อ Template:" : "Template name:",
+                task.title
+              );
+              if (!name?.trim()) return;
+              setSavingTemplate(true);
+              try {
+                await taskTemplatesApi.create({
+                  name: name.trim(),
+                  title: task.title,
+                  description: task.description || null,
+                  taskTypeId: task.taskTypeId || null,
+                  priority: (task.priority || "normal") as any,
+                  timeEstimateHours: task.timeEstimateHours || null,
+                  tags: task.tags || [],
+                });
+                toast.success(language === "th" ? "บันทึก Template แล้ว" : "Template saved");
+              } catch (err: any) {
+                toast.error(err?.message ?? "Failed to save template");
+              } finally {
+                setSavingTemplate(false);
+              }
+            }}
+            className="bg-white/70 backdrop-blur hover:bg-white dark:bg-card/60 dark:hover:bg-card"
+          >
+            💾 {language === "th" ? "บันทึกเป็น Template" : "Save as Template"}
+          </Button>
+        </div>
             <h1 className="text-2xl font-semibold leading-tight tracking-tight md:text-3xl">
               {task.title}
             </h1>
@@ -1540,28 +1611,94 @@ export default function TaskViewPage() {
             </CardContent>
           </Card>
 
-          {/* Attachments - API provides count only */}
-          {task.attachmentCount > 0 && (
-            <Card className="relative overflow-hidden border-border/60">
-              <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-sky-400 to-indigo-500" />
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-                  <div className="flex h-6 w-6 items-center justify-center rounded-md bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-300">
-                    <Paperclip className="h-3 w-3" />
+          {/* Attachments */}
+          <Card className="relative overflow-hidden border-border/60">
+            <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-sky-400 to-indigo-500" />
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                <div className="flex h-6 w-6 items-center justify-center rounded-md bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-300">
+                  <Paperclip className="h-3 w-3" />
+                </div>
+                {language === "th" ? "ไฟล์แนบ" : "Attachments"}
+                {attachments.length > 0 && (
+                  <Badge variant="secondary" className="ml-auto">{attachments.length}</Badge>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {/* File list */}
+              {attachments.map((a) => (
+                <div
+                  key={a.id}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-border/40 bg-muted/20 px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <a
+                      href={a.fileUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 text-sm font-medium text-primary hover:underline truncate"
+                    >
+                      <File className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">{a.fileName || "file"}</span>
+                    </a>
+                    <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                      {a.fileSizeBytes && <span>{formatFileSize(a.fileSizeBytes)}</span>}
+                      {a.uploaderName && <span>· {a.uploaderName}</span>}
+                    </div>
                   </div>
-                  {language === "th" ? "ไฟล์แนบ" : "Attachments"}
-                  <Badge variant="secondary" className="ml-auto">{task.attachmentCount}</Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  {language === "th" 
-                    ? `มี ${task.attachmentCount} ไฟล์แนบ` 
-                    : `${task.attachmentCount} attachments`}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+                    onClick={async () => {
+                      if (!confirm(language === "th" ? "ลบไฟล์นี้?" : "Delete this file?")) return;
+                      try {
+                        await attachmentsApi.delete(taskId!, a.id);
+                        setAttachments((prev) => prev.filter((x) => x.id !== a.id));
+                        toast.success(language === "th" ? "ลบไฟล์แล้ว" : "Deleted");
+                      } catch (err: any) {
+                        toast.error(err?.message ?? "ลบไม่สำเร็จ");
+                      }
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ))}
+
+              {/* Empty state */}
+              {attachments.length === 0 && (
+                <p className="py-2 text-center text-xs text-muted-foreground">
+                  {language === "th" ? "ยังไม่มีไฟล์แนบ — ลากไฟล์มาวางหรือกดปุ่มด้านล่าง" : "No files attached — drag & drop or use the button below"}
                 </p>
-              </CardContent>
-            </Card>
-          )}
+              )}
+
+              {/* Upload */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                onChange={handleFileUpload}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full gap-1.5 h-8"
+                disabled={uploading}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {uploading ? (
+                  <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+                ) : (
+                  <Upload className="h-3.5 w-3.5" />
+                )}
+                {uploading
+                  ? (language === "th" ? "กำลังอัปโหลด..." : "Uploading...")
+                  : (language === "th" ? "อัปโหลดไฟล์" : "Upload File")}
+              </Button>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
